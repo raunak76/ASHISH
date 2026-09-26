@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Student Performance Chart</title>
+
+    <!-- Chart.js Library -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 40px;
+            background-color: #f5f7fa;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        p {
+            color: #555;
+        }
+
+        .chart-container {
+            width: 80%;
+            max-width: 700px;
+            margin: 30px auto;
+            background-color: white;
+            padding: 25px;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Student Performance</h1>
+
+    <p>Dynamic student marks displayed using a chart.</p>
+
+    <div class="chart-container">
+        <canvas id="studentChart"></canvas>
+    </div>
+
+    <script>
+        // Student names
+        const students = [
+            "ASHISH",
+            "RAUNAK",
+            "PRINCE",
+            "AMAN",
+            "AKASH"
+        ];
+
+        // Student marks
+        const marks = [
+            88,
+            82,
+            94,
+            86,
+            90
+        ];
+
+        // Get canvas element
+        const ctx = document.getElementById("studentChart");
+
+        // Create bar chart
+        new Chart(ctx, {
+            type: "bar",
+
+            data: {
+                labels: students,
+
+                datasets: [{
+                    label: "Marks",
+                    data: marks
+                }]
+            },
+
+            options: {
+                responsive: true,
+
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100,
+                        title: {
+                            display: true,
+                            text: "Marks"
+                        }
+                    },
+
+                    x: {
+                        title: {
+                            display: true,
+                            text: "Students"
+                        }
+                    }
+                }
+            }
+        });
+    </script>
+
+</body>
+</html>
