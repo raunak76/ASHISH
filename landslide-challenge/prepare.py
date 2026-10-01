@@ -5,13 +5,12 @@ import pandas as pd
 
 TARGET = "landslide_risk_48h"
 ID = "record_id"
-CUTOFF = "2025-09-01 00:00:00"  # test period: timestamp >= CUTOFF
-N_UNSEEN_LOCATIONS = 6
+N_TEST_LOCATIONS = 12
 SEED = 48
 
 # previous_events_30d is a rolling 30-day sum of past target values. Across
-# consecutive daily test rows its day-to-day change reveals the test labels,
-# so it is removed from every public file.
+# consecutive daily rows of a test site its day-to-day change reveals the test
+# labels, so it is removed from every public file.
 DROP_COLUMNS = ["previous_events_30d"]
 
 
@@ -21,8 +20,6 @@ def _load_labelled(raw: Path) -> pd.DataFrame:
     for path in sorted(raw.rglob("*.csv")):
         if path.name.lower().startswith("sample_submission"):
             continue
-        # Timestamps stay as ISO strings so the cutoff comparison is exact and
-        # the output is byte-identical between runs.
         df = pd.read_csv(path, dtype={"timestamp": str})
         if TARGET in df.columns:
             frames.append(df[df[TARGET].notna()])
@@ -33,6 +30,15 @@ def _load_labelled(raw: Path) -> pd.DataFrame:
     return df
 
 
+def _pick_test_locations(df: pd.DataFrame) -> set:
+    """Stratified pick: sort sites by event rate, cut into equal bands, draw one site per band."""
+    rates = df.groupby("location_id")[TARGET].mean().reset_index()
+    rates = rates.sort_values([TARGET, "location_id"], kind="mergesort")
+    rng = np.random.default_rng(SEED)
+    bands = np.array_split(rates["location_id"].to_numpy(), N_TEST_LOCATIONS)
+    return {int(rng.choice(band)) for band in bands}
+
+
 def prepare(raw: Path, public: Path, private: Path) -> None:
     public.mkdir(parents=True, exist_ok=True)
     private.mkdir(parents=True, exist_ok=True)
@@ -41,15 +47,11 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     df = df.drop(columns=[c for c in DROP_COLUMNS if c in df.columns])
     df = df.sort_values(ID, kind="mergesort").reset_index(drop=True)
 
-    # Hold out whole locations: they appear only in the test period.
-    locations = np.sort(df["location_id"].unique())
-    rng = np.random.default_rng(SEED)
-    unseen = set(rng.choice(locations, N_UNSEEN_LOCATIONS, replace=False).tolist())
-    is_unseen = df["location_id"].isin(unseen)
-    is_test_period = df["timestamp"] >= CUTOFF
-
-    train = df[~is_test_period & ~is_unseen]
-    test = df[is_test_period].sample(frac=1.0, random_state=SEED).reset_index(drop=True)
+    # Whole sites go to test: no test location appears in train.
+    test_locations = _pick_test_locations(df)
+    is_test = df["location_id"].isin(test_locations)
+    train = df[~is_test]
+    test = df[is_test].sample(frac=1.0, random_state=SEED).reset_index(drop=True)
 
     train.to_csv(public / "train.csv", index=False)
     test.drop(columns=[TARGET]).to_csv(public / "test.csv", index=False)
@@ -57,9 +59,4 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     sample = pd.DataFrame({ID: test[ID], TARGET: round(float(train[TARGET].mean()), 4)})
     sample.to_csv(public / "sample_submission.csv", index=False)
 
-    answers = pd.DataFrame({
-        ID: test[ID],
-        TARGET: test[TARGET],
-        "unseen_location": test["location_id"].isin(unseen).astype(int),
-    })
-    answers.to_csv(private / "answers.csv", index=False)
+    test[[ID, TARGET]].to_csv(private / "answers.csv", index=False)
