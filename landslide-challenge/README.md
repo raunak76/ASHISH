@@ -29,27 +29,29 @@ Recommendation kyun: Shipd Discord announcement (09/04/2026) mein khule domains:
 | Rubrics | `rubrics.md` (abhi platform pe rubrics band hain) |
 | Solution | `solution.ipynb` |
 
-## Kya verify kiya gaya hai
+## Kya verify kiya gaya hai (Shipd ke asli raw files pe)
 
-- `prepare.py`: deterministic hai (do baar chalaya, output byte-for-byte same). Raw file ka naam `train (1).csv` jaisa ho tab bhi chalta hai. Public files:
-  - `train.csv` (23,392 readings, 32 sites) aur `train_queries.csv` (731 din)
-  - `test_readings.csv` (8,772 readings, 12 sites × 731 din, poori history)
-  - `test.csv` (584 queries, har din ki ek row, unique `query_id`): sirf wo din jinmein kam se kam ek relevant site hai
-  - `sample_submission.csv` (584 rows: `query_id, location_ids`)
-  - Private `answers.csv`: `query_id, location_ids, candidate_location_ids`. Submission aur answers dono mein target column ka naam `location_ids` hai, taaki Shipd checker target pehchaan sake.
+Raw files: `train (1).csv` (38,012 rows, 52 sites, labelled), `test (1).csv` (10,800 rows, 2026, labels nahi hain, isliye use nahi hota), `sample_submission (1).csv` (ignore hota hai).
+
+- `prepare.py`: deterministic hai (do baar chalaya, output byte-for-byte same). Public files:
+  - `train.csv`: 29,240 readings, 40 sites; `train_queries.csv`: 731 din
+  - `test_readings.csv`: 8,772 readings (12 sites × 731 din, poori history)
+  - `test.csv`: 581 queries, har din ki ek row, `query_id` unique. Sirf wo din jinmein kam se kam ek relevant site hai.
+  - `sample_submission.csv`: 581 rows (`query_id, location_ids`)
+  - Private `answers.csv`: `query_id, location_ids, candidate_location_ids`, koi NaN nahi. Submission aur answers dono mein target column ka naam `location_ids` hai.
 - `previous_events_30d` hata diya (past labels ka rolling sum hai, test labels leak karta).
-- `grade.py`: perfect = 1.0, sabse ulta = 0.0, random ≈ 0.15, rainfall_72h heuristic = 0.34, sample submission = 0.098. Missing column, galat row count, duplicate day, NaN, text, sirf 2 IDs, ek hi site do baar, unknown site, galat query_id, aur decimal ID pe error aata hai.
-- `solution.ipynb`: ~25 second mein chalta hai. Test MAP@3 = **0.5207**.
+- `grade.py`: perfect = 1.0, random ≈ 0.17, rainfall_72h heuristic ≈ 0.38, sample submission = 0.14. Missing column, galat row count, duplicate day, NaN, text, sirf 2 IDs, ek hi site do baar, unknown site, galat query_id, aur decimal ID pe error aata hai.
+- `solution.ipynb`: ~25 second mein chalta hai. Test MAP@3 = **0.5283**.
 
 | Ranker (3-fold GroupKFold by site) | MAP@3 |
 |---|---|
-| Random order | 0.1714 |
-| Heuristic: rainfall_72h | 0.3564 |
-| Heuristic: slope × moisture × rain72 | 0.4031 |
-| Logistic regression, raw (final) | **0.4579** |
-| LightGBM, raw | 0.4259 |
-| LightGBM, raw + location_id | 0.4208 |
-| Logistic regression, engineered | 0.4564 |
-| LightGBM, engineered | 0.4383 |
-| LambdaRank, engineered | 0.4201 |
-| Blend of 3 (rank average) | 0.4427 |
+| Random order | 0.1447 |
+| Heuristic: rainfall_72h | 0.3229 |
+| Heuristic: slope × moisture × rain72 | 0.4214 |
+| Logistic regression, raw (final) | **0.4720** |
+| LightGBM, raw | 0.4493 |
+| LightGBM, raw + location_id | 0.4453 |
+| Logistic regression, engineered | 0.4651 |
+| LightGBM, engineered | 0.4695 |
+| LambdaRank, engineered | 0.4496 |
+| Blend of 3 (rank average) | 0.4670 |
