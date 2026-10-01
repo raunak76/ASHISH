@@ -5,6 +5,8 @@ import pandas as pd
 
 TARGET = "landslide_risk_48h"
 ID = "record_id"
+QUERY = "query_id"
+K = 3
 N_TEST_LOCATIONS = 12
 SEED = 48
 
@@ -39,24 +41,38 @@ def _pick_test_locations(df: pd.DataFrame) -> set:
     return {int(rng.choice(band)) for band in bands}
 
 
+def _join(ids) -> str:
+    return "|".join(str(i) for i in sorted(ids))
+
+
 def prepare(raw: Path, public: Path, private: Path) -> None:
     public.mkdir(parents=True, exist_ok=True)
     private.mkdir(parents=True, exist_ok=True)
 
     df = _load_labelled(raw)
     df = df.drop(columns=[c for c in DROP_COLUMNS if c in df.columns])
-    df = df.sort_values(ID, kind="mergesort").reset_index(drop=True)
+    # One query per calendar day: rank that day's sites by landslide likelihood.
+    df.insert(1, QUERY, df["timestamp"].str[:10])
+    df = df.sort_values([QUERY, "location_id"], kind="mergesort").reset_index(drop=True)
 
     # Whole sites go to test: no test location appears in train.
     test_locations = _pick_test_locations(df)
     is_test = df["location_id"].isin(test_locations)
     train = df[~is_test]
-    test = df[is_test].sample(frac=1.0, random_state=SEED).reset_index(drop=True)
+    test = df[is_test]
 
     train.to_csv(public / "train.csv", index=False)
-    test.drop(columns=[TARGET]).to_csv(public / "test.csv", index=False)
+    test.drop(columns=[TARGET]).sample(frac=1.0, random_state=SEED).to_csv(public / "test.csv", index=False)
 
-    sample = pd.DataFrame({ID: test[ID], TARGET: round(float(train[TARGET].mean()), 4)})
-    sample.to_csv(public / "sample_submission.csv", index=False)
+    days = test.groupby(QUERY)
+    sample = days["location_id"].apply(lambda s: sorted(s)[:K]).reset_index()
+    for k in range(K):
+        sample[f"rec_{k + 1}"] = sample["location_id"].str[k]
+    sample.drop(columns=["location_id"]).to_csv(public / "sample_submission.csv", index=False)
 
-    test[[ID, TARGET]].to_csv(private / "answers.csv", index=False)
+    answers = pd.DataFrame({
+        QUERY: list(days.groups),
+        "relevant": days.apply(lambda g: _join(g.loc[g[TARGET] == 1, "location_id"])).to_numpy(),
+        "candidates": days["location_id"].apply(_join).to_numpy(),
+    })
+    answers.to_csv(private / "answers.csv", index=False)
