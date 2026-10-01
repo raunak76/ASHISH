@@ -18,7 +18,7 @@
 ## 4. REQUIRED · CODE_QUALITY
 **Criterion:** The submission has exactly one row for each of the 581 `query_id` values in `test.csv`, and each `location_ids` value lists three distinct, space-separated IDs taken from that query's `candidate_location_ids`, ordered best first.
 
-**Why:** Readings in `test_readings.csv` cover all 731 days, but only the days in `test.csv` are queries. Submitting every reading day, or a repeated or unknown site in any row, makes the whole submission invalid.
+**Why:** Readings in `test_readings.csv` cover all 731 days, but only the days in `test.csv` are queries. Missing a query makes the submission invalid, and recommending a repeated or non-candidate site wastes one of only three slots.
 
 ## 5. REQUIRED · DATA_HANDLING
 **Criterion:** Handles the ~5% missing values in `soil_moisture`, `vegetation_index`, the four rainfall columns and `temperature_c` so that every candidate site still gets a score. Does not silently drop candidates with missing readings from the ranking.

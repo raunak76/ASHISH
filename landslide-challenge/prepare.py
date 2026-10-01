@@ -90,4 +90,6 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     sample[TARGET_COL] = test_queries[CANDIDATES].str.split().str[:K].str.join(" ")
     sample.to_csv(public / "sample_submission.csv", index=False)
 
-    answers[[QUERY, TARGET_COL, CANDIDATES]].to_csv(private / "answers.csv", index=False)
+    # Only the target goes into answers: every other column would be flagged as a
+    # target leaking into the public files.
+    answers[[QUERY, TARGET_COL]].to_csv(private / "answers.csv", index=False)

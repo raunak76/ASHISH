@@ -87,4 +87,5 @@ Submit a CSV file with the following format:
 **Requirements**
 - Must contain exactly one row per `query_id` in `test.csv` (581 rows), in any order.
 - Include a header row.
-- `location_ids` must contain exactly three different integers taken from that query's `candidate_location_ids`. Missing, duplicate or unknown values make the submission invalid.
+- `location_ids` should list three different integers from that query's `candidate_location_ids`, best first. Only the first three distinct IDs are scored, and an ID that is not a relevant site for that day (including one outside the candidates) counts as a miss.
+- Missing `query_id` rows, duplicate `query_id` rows, or non-integer tokens make the submission invalid.

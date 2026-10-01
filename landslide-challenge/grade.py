@@ -2,52 +2,57 @@ import pandas as pd
 
 QUERY = "query_id"
 TARGET_COL = "location_ids"
-CANDIDATES = "candidate_location_ids"
 K = 3
 
 
 def _ids(cell) -> list:
+    """Space-separated location_ids -> ordered list without duplicates."""
     if pd.isna(cell):
         return []
-    return [int(float(x)) if float(x).is_integer() else float(x) for x in str(cell).split()]
+    out = []
+    for token in str(cell).split():
+        try:
+            value = float(token)
+        except ValueError:
+            raise ValueError(f"location_ids must be space-separated integers, got {token!r}")
+        if not value.is_integer():
+            raise ValueError(f"location_ids must be integers, got {token!r}")
+        if int(value) not in out:
+            out.append(int(value))
+    return out
 
 
 def grade(submission: pd.DataFrame, answers: pd.DataFrame) -> float:
     """
-    MAP@3 over query days that have at least one relevant site (higher is better):
-        AP@3 = sum over ranks k with a relevant site of precision@k, divided by min(3, #relevant)
-    submission.location_ids: 3 distinct space-separated location_ids, best first.
-    answers.location_ids: space-separated relevant location_ids (empty if none).
+    MAP@3 (higher is better). For each query in `answers`:
+        AP@3 = sum over ranks k <= 3 holding a relevant site of precision@k, divided by min(3, #relevant)
+    submission.location_ids: recommended location_ids, space-separated, best first (only the first 3 count;
+    IDs that are not relevant simply count as misses).
+    answers.location_ids: the relevant location_ids, space-separated.
+    `answers` may be any subset of the test queries (e.g. a public or private split).
     Raise only for truly invalid submissions.
     """
     missing = {QUERY, TARGET_COL} - set(submission.columns)
     if missing:
         raise ValueError(f"Submission is missing columns: {sorted(missing)}")
-    if len(submission) != len(answers):
-        raise ValueError(f"Expected {len(answers)} rows, got {len(submission)}")
     sub = submission[[QUERY, TARGET_COL]].copy()
     sub[QUERY] = sub[QUERY].astype(str).str.strip()
     if sub[QUERY].duplicated().any():
         raise ValueError("Submission contains duplicate query_id values")
-    ans = answers.copy()
-    ans[QUERY] = ans[QUERY].astype(str).str.strip()
-    if set(sub[QUERY]) != set(ans[QUERY]):
-        raise ValueError("Submission query_id values do not match test.csv")
     recs = dict(zip(sub[QUERY], sub[TARGET_COL]))
 
+    queries = answers[QUERY].astype(str).str.strip()
+    absent = [q for q in queries if q not in recs]
+    if absent:
+        raise ValueError(f"Submission is missing {len(absent)} query_id values, e.g. {absent[0]}")
+
     total, n_scored = 0.0, 0
-    for q, rel_cell, cand_cell in zip(ans[QUERY], ans[TARGET_COL], ans[CANDIDATES]):
-        try:
-            recommended = _ids(recs[q])
-        except ValueError:
-            raise ValueError(f"Query {q}: location_ids must be space-separated integers")
-        if len(recommended) != K or len(set(recommended)) != K or not set(recommended) <= set(_ids(cand_cell)):
-            raise ValueError(f"Query {q}: location_ids must list {K} distinct candidate sites for that day")
+    for q, rel_cell in zip(queries, answers[TARGET_COL]):
         relevant = set(_ids(rel_cell))
         if not relevant:
             continue
         hits, ap = 0, 0.0
-        for rank, site in enumerate(recommended, start=1):
+        for rank, site in enumerate(_ids(recs[q])[:K], start=1):
             if site in relevant:
                 hits += 1
                 ap += hits / rank

@@ -38,9 +38,11 @@ Raw files: `train (1).csv` (38,012 rows, 52 sites, labelled), `test (1).csv` (10
   - `test_readings.csv`: 8,772 readings (12 sites × 731 din, poori history)
   - `test.csv`: 581 queries, har din ki ek row, `query_id` unique. Sirf wo din jinmein kam se kam ek relevant site hai.
   - `sample_submission.csv`: 581 rows (`query_id, location_ids`)
-  - Private `answers.csv`: `query_id, location_ids, candidate_location_ids`, koi NaN nahi. Submission aur answers dono mein target column ka naam `location_ids` hai.
+  - Private `answers.csv`: sirf `query_id, location_ids` (koi NaN nahi). Doosra koi column nahi, warna Shipd use public test mein target leak maanta hai.
 - `previous_events_30d` hata diya (past labels ka rolling sum hai, test labels leak karta).
-- `grade.py`: perfect = 1.0, random ≈ 0.17, rainfall_72h heuristic ≈ 0.38, sample submission = 0.14. Missing column, galat row count, duplicate day, NaN, text, sirf 2 IDs, ek hi site do baar, unknown site, galat query_id, aur decimal ID pe error aata hai.
+- `grade.py`: sahi jawab ko hi submission banao toh 1.0 (poore answers pe, aur Shipd ke public/private hisson pe alag-alag bhi). Random ≈ 0.17, rainfall_72h heuristic ≈ 0.38, sample submission = 0.14, sab ulta = 0.0.
+  - Lenient hai: rows ka order, extra rows, 1–2 ya 3 se zyada IDs, aur NaN cell pe score deta hai.
+  - Error sirf in pe: missing column, duplicate query, missing query, text ya decimal ID.
 - `solution.ipynb`: ~25 second mein chalta hai. Test MAP@3 = **0.5283**.
 
 | Ranker (3-fold GroupKFold by site) | MAP@3 |
