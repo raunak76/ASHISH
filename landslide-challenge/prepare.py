@@ -15,13 +15,29 @@ SEED = 48
 DROP_COLUMNS = ["previous_events_30d"]
 
 
+def _load_labelled(raw: Path) -> pd.DataFrame:
+    """Collect every labelled row from the raw CSVs (file names may vary, e.g. 'train (1).csv')."""
+    frames = []
+    for path in sorted(raw.rglob("*.csv")):
+        if path.name.lower().startswith("sample_submission"):
+            continue
+        # Timestamps stay as ISO strings so the cutoff comparison is exact and
+        # the output is byte-identical between runs.
+        df = pd.read_csv(path, dtype={"timestamp": str})
+        if TARGET in df.columns:
+            frames.append(df[df[TARGET].notna()])
+    if not frames:
+        raise FileNotFoundError(f"No CSV with a '{TARGET}' column found in {raw}")
+    df = pd.concat(frames, ignore_index=True).drop_duplicates(ID)
+    df[TARGET] = df[TARGET].astype(int)
+    return df
+
+
 def prepare(raw: Path, public: Path, private: Path) -> None:
     public.mkdir(parents=True, exist_ok=True)
     private.mkdir(parents=True, exist_ok=True)
 
-    # Read everything as written; timestamps stay as ISO strings so that the
-    # string comparison below is exact and the output is byte-identical.
-    df = pd.read_csv(raw / "train.csv", dtype={"timestamp": str})
+    df = _load_labelled(raw)
     df = df.drop(columns=[c for c in DROP_COLUMNS if c in df.columns])
     df = df.sort_values(ID, kind="mergesort").reset_index(drop=True)
 
