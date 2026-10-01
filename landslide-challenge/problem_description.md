@@ -4,11 +4,11 @@
 
 A regional geohazard team runs a field-inspection crew that can visit **3 hillslope monitoring sites per day**. Each morning, every site sends one reading: static terrain properties (elevation, slope, aspect, soil type), surface conditions (soil moisture, vegetation), air temperature, and nested rainfall-accumulation windows (1h, 6h, 24h, 72h). Your task is to **recommend, for each day, the 3 sites the crew should inspect**, ranked so that the sites where a landslide event occurs within 48 hours of the reading come first.
 
-Each day is one recommendation query, and the candidates are the 12 test sites, each described by its reading that day in `test_readings.csv`. A site is **relevant** for a day if `landslide_risk_48h = 1` for its reading that day.
+Each day is one recommendation query, and the candidates are the 12 test sites, each described by its reading that day in `test_readings.csv`. A site is **relevant** for a day if a landslide event occurred at the site within 48 hours of that day's reading.
 
 What makes this hard:
 
-- **The candidate sites are new.** The data is split by site, and none of the 12 test sites appear in `train.csv`. A recommender has to learn how terrain, soil and rainfall combine into failure risk in general, not memorise which sites tend to fail.
+- **The candidate sites are new.** The data is split by site, and none of the 12 test sites appear in the training files. A recommender has to learn how terrain, soil and rainfall combine into failure risk in general, not memorise which sites tend to fail.
 - **Relevance is sparse.** About 11% of readings are relevant. The test queries are the 581 days on which at least one test site is relevant, with about 1.9 relevant sites out of 12 on average.
 - **Imperfect sensors.** About 5% of the sensor and weather values are missing. Rainfall is zero-inflated and heavy-tailed, and the extreme values are genuine storm readings, not errors.
 
@@ -19,7 +19,7 @@ Submissions are scored with **MAP@3** (mean average precision at 3, higher is be
 ~~~python
 def average_precision_at_3(recommended, relevant):
     # recommended: list of 3 distinct location_ids, best first
-    # relevant: set of location_ids with landslide_risk_48h == 1 that day (non-empty)
+    # relevant: set of relevant location_ids for that day (non-empty)
     hits, score = 0, 0.0
     for rank, site in enumerate(recommended[:3], start=1):
         if site in relevant:
@@ -36,24 +36,33 @@ For reference, a random order scores about 0.17, and ranking each day's sites by
 
 ## Dataset
 
-All files are in `public/`. Readings files have one row per site per day; query files have one row per day.
+All files are in `public/`. Query files have one row per day; readings files have one row per site per day.
 
 | File | Rows | Description |
 |------|------|-------------|
-| `train.csv` | 29,240 | Readings with relevance labels from 40 training sites, every day from 2024-01-01 to 2025-12-31 |
-| `train_queries.csv` | 731 | One row per training day: `query_id`, `date`, `candidate_sites` (the 40 training sites, space-separated) and `location_ids` (the relevant ones, space-separated; empty if none) |
-| `test_readings.csv` | 8,772 | Readings without labels from the 12 test sites, every day over the same period (including days that are not queries, so each site's history is complete) |
-| `test.csv` | 581 | One row per test query: `query_id`, `date` and `candidate_sites` (the 12 test sites, space-separated) |
+| `train.csv` | 723 | Training queries: `query_id`, `date`, `candidate_sites` (the 40 training sites, space-separated) and the target `location_ids` (the relevant sites, space-separated) |
+| `test.csv` | 581 | Test queries: `query_id`, `date` and `candidate_sites` (the 12 test sites, space-separated) |
+| `train_readings.csv` | 29,240 | Readings of the 40 training sites, every day from 2024-01-01 to 2025-12-31 |
+| `test_readings.csv` | 8,772 | Readings of the 12 test sites, every day over the same period |
 | `sample_submission.csv` | 581 | Required submission format |
 
-`train.csv` is sorted by `query_id` and `location_id`; `test_readings.csv` is shuffled.
+Queries are the days on which at least one candidate site is relevant (723 of 731 training days, 581 of 731 test days). The readings files cover every day, including days that are not queries, so each site's history is complete. A training reading is relevant when its `location_id` is listed in `location_ids` for its `query_id` in `train.csv`; readings on days that are not in `train.csv` are not relevant. `train_readings.csv` is sorted by `query_id` and `location_id`; `test_readings.csv` is shuffled.
 
-### Readings columns (`train.csv`, `test_readings.csv`)
+### Query columns (`train.csv`, `test.csv`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `query_id` | string | Query identifier: `train_YYYY-MM-DD` in train files, `test_YYYY-MM-DD` in test files |
+| `date` | string | Query day, `YYYY-MM-DD` |
+| `candidate_sites` | string | Space-separated `location_id`s of that day's candidate sites |
+| `location_ids` | string | **Target**: space-separated `location_id`s of the relevant sites. `train.csv` only |
+
+### Readings columns (`train_readings.csv`, `test_readings.csv`)
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `record_id` | int | Unique row identifier (carries no signal) |
-| `query_id` | string | Query identifier: `train_YYYY-MM-DD` in train files, `test_YYYY-MM-DD` in test files, where the date is the date part of `timestamp` |
+| `query_id` | string | Query the reading belongs to (`train_` or `test_` plus the date part of `timestamp`) |
 | `location_id` | int | Monitoring site (test sites never appear in train) |
 | `timestamp` | datetime | Reading time, `YYYY-MM-DD HH:MM:SS` |
 | `elevation_m` | float | Elevation in metres (constant per site) |
@@ -67,7 +76,6 @@ All files are in `public/`. Readings files have one row per site per day; query 
 | `rainfall_24h_mm` | float | Rainfall in the last 24 hours, mm (may be missing) |
 | `rainfall_72h_mm` | float | Rainfall in the last 72 hours, mm (may be missing) |
 | `temperature_c` | float | Air temperature, °C (may be missing) |
-| `landslide_risk_48h` | int (0/1) | **Relevance label**: 1 if a landslide event occurred at the site within 48 hours of the reading. `train.csv` only |
 
 When all four values are present, `rainfall_72h_mm ≥ rainfall_24h_mm ≥ rainfall_6h_mm ≥ rainfall_1h_mm`.
 

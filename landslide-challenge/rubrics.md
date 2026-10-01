@@ -1,14 +1,14 @@
 # Rubrics (10 criteria)
 
 ## 1. REQUIRED · TRAINING
-**Criterion:** Validates with folds grouped by `location_id` (e.g. GroupKFold or leave-sites-out), so that no site contributes rows to both the fitting and the validation part of a fold, and computes MAP@3 per day among the validation-fold sites (e.g. from `train_queries.csv` restricted to those sites). Does not select models with random row-level K-fold.
+**Criterion:** Validates with folds grouped by `location_id` (e.g. GroupKFold or leave-sites-out), so that no site contributes rows to both the fitting and the validation part of a fold, and computes MAP@3 per day among the validation-fold sites (e.g. from `train.csv` restricted to those sites). Does not select models with random row-level K-fold.
 
 **Why:** Every candidate site in the test set is unseen, and readings from neighbouring days at one site are nearly identical. Row-level K-fold leaks site identity into validation and overstates performance on new sites.
 
 ## 2. REQUIRED · FEATURE_ENGINEERING
 **Criterion:** Scores for test sites do not depend on site identity. For example, `location_id` is excluded, or any per-site encoding has an explicit fallback for unseen IDs instead of being passed to the model as a raw numeric feature.
 
-**Why:** None of the test `location_id` values appear in `train.csv`. A raw ID feature or a per-site target encoding without a fallback produces arbitrary scores for them.
+**Why:** None of the test `location_id` values appear in the training files. A raw ID feature or a per-site target encoding without a fallback produces arbitrary scores for them.
 
 ## 3. REQUIRED · DATA_HANDLING
 **Criterion:** Does not compute features for a reading from readings taken later at the same site (e.g. next-day rainfall, centred or backward-shifted rolling windows, or per-site statistics computed over the whole series including later rows).

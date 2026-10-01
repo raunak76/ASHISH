@@ -81,22 +81,24 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     df.insert(1, QUERY, is_test.map({True: "test_", False: "train_"}) + df[DATE])
     train = df[~is_test]
     test = df[is_test]
-    readings = [c for c in df.columns if c != DATE]
 
-    # Readings (one row per site and day). Test readings cover every day so that
-    # each site's history is complete, including days that are not queries.
-    train[readings].to_csv(public / "train.csv", index=False)
-    (test[readings].drop(columns=[TARGET])
-        .sample(frac=1.0, random_state=SEED)
-        .to_csv(public / "test_readings.csv", index=False))
-
-    # Queries (one row per day). Test queries keep only days with at least one
-    # relevant site: other days cannot be scored by MAP@3, and knowing that a day
-    # has an event does not change the order of sites within it.
-    _queries(train, with_labels=True).to_csv(public / "train_queries.csv", index=False)
+    # Queries (one row per day). train.csv and test.csv share the same columns and
+    # train.csv adds the target (the relevant sites). Only days with at least one
+    # relevant site are queries: other days cannot be scored by MAP@3, and knowing
+    # that a day has an event does not change the order of sites within it.
+    train_queries = _queries(train, with_labels=True)
+    train_queries = train_queries[train_queries[TARGET_COL] != ""]
+    train_queries.to_csv(public / "train.csv", index=False)
     answers = _queries(test, with_labels=True)
     answers = answers[answers[TARGET_COL] != ""].reset_index(drop=True)
     answers[[QUERY, DATE, CANDIDATES]].to_csv(public / "test.csv", index=False)
+
+    # Site readings (one row per site and day), identical columns for train and test
+    # and no label column: relevance comes only from train.csv. Readings cover every
+    # day so that each site's history is complete, including days that are not queries.
+    readings = [c for c in df.columns if c not in (DATE, TARGET)]
+    train[readings].to_csv(public / "train_readings.csv", index=False)
+    test[readings].sample(frac=1.0, random_state=SEED).to_csv(public / "test_readings.csv", index=False)
 
     sample = answers[[QUERY]].copy()
     sample[TARGET_COL] = answers[CANDIDATES].str.split().str[:K].str.join(" ")
