@@ -1,7 +1,7 @@
 # Rubrics (10 criteria)
 
 ## 1. REQUIRED · TRAINING
-**Criterion:** Validates with folds grouped by `location_id` (e.g. GroupKFold or leave-sites-out), so that no site contributes rows to both the fitting and the validation part of a fold, and computes MAP@3 per day among the validation-fold sites. Does not select models with random row-level K-fold.
+**Criterion:** Validates with folds grouped by `location_id` (e.g. GroupKFold or leave-sites-out), so that no site contributes rows to both the fitting and the validation part of a fold, and computes MAP@3 per day among the validation-fold sites (e.g. from `train_queries.csv` restricted to those sites). Does not select models with random row-level K-fold.
 
 **Why:** Every candidate site in the test set is unseen, and readings from neighbouring days at one site are nearly identical. Row-level K-fold leaks site identity into validation and overstates performance on new sites.
 
@@ -16,9 +16,9 @@
 **Why:** Each site's readings form a daily series. Later readings are available in the files but are not part of the conditions on the query day, and the description explicitly forbids them.
 
 ## 4. REQUIRED · CODE_QUALITY
-**Criterion:** The submission has exactly one row for each of the 731 test `query_id` values, including days where no site is expected to be relevant, and each row lists three distinct `location_id`s taken from that day's `test.csv` rows.
+**Criterion:** The submission has exactly one row for each of the 584 `query_id` values in `test.csv`, and each `location_ids` value lists three distinct, space-separated IDs taken from that query's `candidate_location_ids`, ordered best first.
 
-**Why:** Unscored days still have to be present, and a repeated or unknown site in any row makes the whole submission invalid.
+**Why:** Readings in `test_readings.csv` cover all 731 days, but only the days in `test.csv` are queries. Submitting every reading day, or a repeated or unknown site in any row, makes the whole submission invalid.
 
 ## 5. REQUIRED · DATA_HANDLING
 **Criterion:** Handles the ~5% missing values in `soil_moisture`, `vegetation_index`, the four rainfall columns and `temperature_c` so that every candidate site still gets a score. Does not silently drop candidates with missing readings from the ranking.
@@ -48,4 +48,4 @@
 ## 10. RECOMMENDED · COMMUNICATION
 **Criterion:** Explains how ties and low-information days are handled (e.g. days where all sites have near-zero scores) and states the tie-break rule used to choose three sites.
 
-**Why:** About 20% of test days have no relevant site and many days are dry everywhere. A deterministic, explained tie-break makes the recommendations reproducible.
+**Why:** Many days are dry at every site, so scores within a day can be nearly identical. A deterministic, explained tie-break makes the recommendations reproducible.

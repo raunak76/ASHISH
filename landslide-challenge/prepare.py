@@ -6,6 +6,8 @@ import pandas as pd
 TARGET = "landslide_risk_48h"
 ID = "record_id"
 QUERY = "query_id"
+CANDIDATES = "candidate_location_ids"
+TARGET_COL = "location_ids"  # space-separated site IDs
 K = 3
 N_TEST_LOCATIONS = 12
 SEED = 48
@@ -42,7 +44,16 @@ def _pick_test_locations(df: pd.DataFrame) -> set:
 
 
 def _join(ids) -> str:
-    return "|".join(str(i) for i in sorted(ids))
+    return " ".join(str(i) for i in sorted(ids))
+
+
+def _queries(df: pd.DataFrame, with_labels: bool) -> pd.DataFrame:
+    """One row per day: the candidate sites and, if requested, the relevant ones."""
+    days = df.groupby(QUERY)
+    out = pd.DataFrame({QUERY: list(days.groups), CANDIDATES: days["location_id"].apply(_join).to_numpy()})
+    if with_labels:
+        out[TARGET_COL] = days.apply(lambda g: _join(g.loc[g[TARGET] == 1, "location_id"])).to_numpy()
+    return out
 
 
 def prepare(raw: Path, public: Path, private: Path) -> None:
@@ -61,18 +72,22 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     train = df[~is_test]
     test = df[is_test]
 
+    # Readings (one row per site and day). Test readings cover every day so that
+    # each site's history is complete, including days that are not queries.
     train.to_csv(public / "train.csv", index=False)
-    test.drop(columns=[TARGET]).sample(frac=1.0, random_state=SEED).to_csv(public / "test.csv", index=False)
+    test.drop(columns=[TARGET]).sample(frac=1.0, random_state=SEED).to_csv(public / "test_readings.csv", index=False)
 
-    days = test.groupby(QUERY)
-    sample = days["location_id"].apply(lambda s: sorted(s)[:K]).reset_index()
-    for k in range(K):
-        sample[f"rec_{k + 1}"] = sample["location_id"].str[k]
-    sample.drop(columns=["location_id"]).to_csv(public / "sample_submission.csv", index=False)
+    # Queries (one row per day). Test queries keep only days with at least one
+    # relevant site: other days cannot be scored by MAP@3, and knowing that a day
+    # has an event does not change the order of sites within it.
+    _queries(train, with_labels=True).to_csv(public / "train_queries.csv", index=False)
+    answers = _queries(test, with_labels=True)
+    answers = answers[answers[TARGET_COL] != ""].reset_index(drop=True)
+    test_queries = answers[[QUERY, CANDIDATES]]
+    test_queries.to_csv(public / "test.csv", index=False)
 
-    answers = pd.DataFrame({
-        QUERY: list(days.groups),
-        "relevant": days.apply(lambda g: _join(g.loc[g[TARGET] == 1, "location_id"])).to_numpy(),
-        "candidates": days["location_id"].apply(_join).to_numpy(),
-    })
-    answers.to_csv(private / "answers.csv", index=False)
+    sample = test_queries[[QUERY]].copy()
+    sample[TARGET_COL] = test_queries[CANDIDATES].str.split().str[:K].str.join(" ")
+    sample.to_csv(public / "sample_submission.csv", index=False)
+
+    answers[[QUERY, TARGET_COL, CANDIDATES]].to_csv(private / "answers.csv", index=False)
