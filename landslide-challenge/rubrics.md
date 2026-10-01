@@ -16,7 +16,7 @@
 **Why:** Each site's readings form a daily series. Later readings are available in the files but are not part of the conditions on the query day, and the description explicitly forbids them.
 
 ## 4. REQUIRED · CODE_QUALITY
-**Criterion:** The submission has exactly one row for each of the 584 `query_id` values in `test.csv`, and each `location_ids` value lists three distinct, space-separated IDs taken from that query's `candidate_location_ids`, ordered best first.
+**Criterion:** The submission has exactly one row for each of the 581 `query_id` values in `test.csv`, and each `location_ids` value lists three distinct, space-separated IDs taken from that query's `candidate_location_ids`, ordered best first.
 
 **Why:** Readings in `test_readings.csv` cover all 731 days, but only the days in `test.csv` are queries. Submitting every reading day, or a repeated or unknown site in any row, makes the whole submission invalid.
 
@@ -33,7 +33,7 @@
 ## 7. RECOMMENDED · MODELING
 **Criterion:** Reports MAP@3 for a random order and for a simple domain heuristic (e.g. ranking by `rainfall_72h_mm`) under the same site-grouped validation, and shows that the final recommender beats both.
 
-**Why:** Random order scores about 0.15 and the rainfall heuristic about 0.34. A learned model that does not clearly beat a one-column heuristic is not extracting signal from terrain and soil.
+**Why:** Random order scores about 0.17 and the rainfall heuristic about 0.38. A learned model that does not clearly beat a one-column heuristic is not extracting signal from terrain and soil.
 
 ## 8. RECOMMENDED · FEATURE_ENGINEERING
 **Criterion:** Derives features from the nested rainfall windows (e.g. 6h−1h, 24h−6h, 72h−24h increments or intensity ratios) or from each site's earlier readings (lagged rainfall or soil moisture, trailing multi-day sums), computed in timestamp order per site.

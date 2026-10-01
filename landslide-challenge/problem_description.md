@@ -9,7 +9,7 @@ Each day is one recommendation query, and the candidates are the 12 test sites, 
 What makes this hard:
 
 - **The candidate sites are new.** The data is split by site, and none of the 12 test sites appear in `train.csv`. A recommender has to learn how terrain, soil and rainfall combine into failure risk in general, not memorise which sites tend to fail.
-- **Relevance is sparse.** About 11% of readings are relevant. The test queries are the 584 days on which at least one test site is relevant, with about 1.9 relevant sites out of 12 on average.
+- **Relevance is sparse.** About 11% of readings are relevant. The test queries are the 581 days on which at least one test site is relevant, with about 1.9 relevant sites out of 12 on average.
 - **Imperfect sensors.** About 5% of the sensor and weather values are missing. Rainfall is zero-inflated and heavy-tailed, and the extreme values are genuine storm readings, not errors.
 
 ## Evaluation
@@ -32,7 +32,7 @@ def evaluate(submission, truth):
     return sum(average_precision_at_3(submission[q], truth[q]) for q in truth) / len(truth)
 ~~~
 
-For reference, a random order scores about 0.15, and ranking each day's sites by `rainfall_72h_mm` alone scores about 0.34.
+For reference, a random order scores about 0.17, and ranking each day's sites by `rainfall_72h_mm` alone scores about 0.38.
 
 ## Dataset
 
@@ -40,11 +40,11 @@ All files are in `public/`. Readings files have one row per site per day; query 
 
 | File | Rows | Description |
 |------|------|-------------|
-| `train.csv` | 23,392 | Readings with relevance labels from 32 training sites, every day from 2024-01-01 to 2025-12-31 |
-| `train_queries.csv` | 731 | One row per training day: `query_id`, `candidate_location_ids` (the 32 training sites) and `location_ids` (the relevant ones, space-separated; empty if none) |
+| `train.csv` | 29,240 | Readings with relevance labels from 40 training sites, every day from 2024-01-01 to 2025-12-31 |
+| `train_queries.csv` | 731 | One row per training day: `query_id`, `candidate_location_ids` (the 40 training sites) and `location_ids` (the relevant ones, space-separated; empty if none) |
 | `test_readings.csv` | 8,772 | Readings without labels from the 12 test sites, every day over the same period (including days that are not queries, so each site's history is complete) |
-| `test.csv` | 584 | One row per test query: `query_id` and `candidate_location_ids` (the 12 test sites, space-separated) |
-| `sample_submission.csv` | 584 | Required submission format |
+| `test.csv` | 581 | One row per test query: `query_id` and `candidate_location_ids` (the 12 test sites, space-separated) |
+| `sample_submission.csv` | 581 | Required submission format |
 
 `train.csv` is sorted by `query_id` and `location_id`; `test_readings.csv` is shuffled.
 
@@ -85,6 +85,6 @@ Submit a CSV file with the following format:
 | `location_ids` | string | The 3 recommended `location_id`s, space-separated, best first (e.g. `1012 1001 1048`) |
 
 **Requirements**
-- Must contain exactly one row per `query_id` in `test.csv` (584 rows), in any order.
+- Must contain exactly one row per `query_id` in `test.csv` (581 rows), in any order.
 - Include a header row.
 - `location_ids` must contain exactly three different integers taken from that query's `candidate_location_ids`. Missing, duplicate or unknown values make the submission invalid.
