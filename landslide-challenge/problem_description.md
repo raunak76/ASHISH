@@ -41,9 +41,9 @@ All files are in `public/`. Readings files have one row per site per day; query 
 | File | Rows | Description |
 |------|------|-------------|
 | `train.csv` | 29,240 | Readings with relevance labels from 40 training sites, every day from 2024-01-01 to 2025-12-31 |
-| `train_queries.csv` | 731 | One row per training day: `query_id`, `candidate_location_ids` (the 40 training sites) and `location_ids` (the relevant ones, space-separated; empty if none) |
+| `train_queries.csv` | 731 | One row per training day: `query_id`, `date`, `candidate_sites` (the 40 training sites, space-separated) and `location_ids` (the relevant ones, space-separated; empty if none) |
 | `test_readings.csv` | 8,772 | Readings without labels from the 12 test sites, every day over the same period (including days that are not queries, so each site's history is complete) |
-| `test.csv` | 581 | One row per test query: `query_id` and `candidate_location_ids` (the 12 test sites, space-separated) |
+| `test.csv` | 581 | One row per test query: `query_id`, `date` and `candidate_sites` (the 12 test sites, space-separated) |
 | `sample_submission.csv` | 581 | Required submission format |
 
 `train.csv` is sorted by `query_id` and `location_id`; `test_readings.csv` is shuffled.
@@ -53,7 +53,7 @@ All files are in `public/`. Readings files have one row per site per day; query 
 | Column | Type | Description |
 |--------|------|-------------|
 | `record_id` | int | Unique row identifier (carries no signal) |
-| `query_id` | string | Query day, `YYYY-MM-DD` (the date part of `timestamp`) |
+| `query_id` | string | Query identifier: `train_YYYY-MM-DD` in train files, `test_YYYY-MM-DD` in test files, where the date is the date part of `timestamp` |
 | `location_id` | int | Monitoring site (test sites never appear in train) |
 | `timestamp` | datetime | Reading time, `YYYY-MM-DD HH:MM:SS` |
 | `elevation_m` | float | Elevation in metres (constant per site) |
@@ -81,11 +81,11 @@ Submit a CSV file with the following format:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `query_id` | string | Query day from `test.csv`, `YYYY-MM-DD` |
+| `query_id` | string | Query identifier from `test.csv`, e.g. `test_2024-01-03` |
 | `location_ids` | string | The 3 recommended `location_id`s, space-separated, best first (e.g. `1012 1001 1048`) |
 
 **Requirements**
 - Must contain exactly one row per `query_id` in `test.csv` (581 rows), in any order.
 - Include a header row.
-- `location_ids` should list three different integers from that query's `candidate_location_ids`, best first. Only the first three distinct IDs are scored, and an ID that is not a relevant site for that day (including one outside the candidates) counts as a miss.
+- `location_ids` should list three different integers from that query's `candidate_sites`, best first. Only the first three distinct IDs are scored, and an ID that is not a relevant site for that day (including one outside the candidates) counts as a miss.
 - Missing `query_id` rows, duplicate `query_id` rows, or non-integer tokens make the submission invalid.

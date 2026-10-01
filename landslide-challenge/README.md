@@ -9,7 +9,8 @@ Dataset: **LandslideRisk-48: Short-Term Landslide Probability from Rainfall & Te
 | 1 | Time-forward probability prediction | ❌ "Forecasting", not accepting submissions |
 | 2 | Site-split binary classification | ❌ "Tabular", not accepting submissions |
 | 3 | Daily top-3 site recommendation, `test.csv` mein har din ki 12 rows | ✅ Domain pass, ❌ "public test IDs are not unique" |
-| 4 (current) | Same recommendation, `test.csv` mein har din ki **ek row** | Checks dobara chalana hai |
+| 4 | Same recommendation, `test.csv` mein har din ki ek row | ✅ Evaluator pass, ❌ answers mein `candidate_location_ids` tha jo `test.csv` mein bhi tha |
+| 5 (current) | answers mein sirf target; candidates column ka naam `candidate_sites`; train/test query IDs alag | Checks dobara chalana hai |
 
 Recommendation kyun: Shipd Discord announcement (09/04/2026) mein khule domains: NLP, Computer Vision, Object Detection, **Recommendation**, Sequence to Sequence, Prompt Engineering, RAG, Fine-Tuning, From Scratch, LLM Evaluation. Iske alawa Shipd Eris ke public accepted challenges mein kai Recommendation/Ranking challenges hain, jaise "Coastal Sensor Signature Recommendation" (sensor data, MAP@5), "Biocatalytic Product Recommendation" aur "Biomedical Concept Evidence Ranking". Source: github.com/OmerFarukMerey/project-eris-shipd-csofm-solutions.
 
@@ -34,9 +35,10 @@ Recommendation kyun: Shipd Discord announcement (09/04/2026) mein khule domains:
 Raw files: `train (1).csv` (38,012 rows, 52 sites, labelled), `test (1).csv` (10,800 rows, 2026, labels nahi hain, isliye use nahi hota), `sample_submission (1).csv` (ignore hota hai).
 
 - `prepare.py`: deterministic hai (do baar chalaya, output byte-for-byte same). Public files:
-  - `train.csv`: 29,240 readings, 40 sites; `train_queries.csv`: 731 din
+  - `train.csv`: 29,240 readings, 40 sites; `train_queries.csv`: 731 din (`query_id, date, candidate_sites, location_ids`)
   - `test_readings.csv`: 8,772 readings (12 sites × 731 din, poori history)
-  - `test.csv`: 581 queries, har din ki ek row, `query_id` unique. Sirf wo din jinmein kam se kam ek relevant site hai.
+  - `test.csv`: 581 queries (`query_id, date, candidate_sites`), har din ki ek row, `query_id` unique. Sirf wo din jinmein kam se kam ek relevant site hai.
+  - Query IDs: train mein `train_YYYY-MM-DD`, test mein `test_YYYY-MM-DD`, taaki train aur test ke IDs kabhi overlap na hon.
   - `sample_submission.csv`: 581 rows (`query_id, location_ids`)
   - Private `answers.csv`: sirf `query_id, location_ids` (koi NaN nahi). Doosra koi column nahi, warna Shipd use public test mein target leak maanta hai.
 - `previous_events_30d` hata diya (past labels ka rolling sum hai, test labels leak karta).
