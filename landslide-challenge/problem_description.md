@@ -1,38 +1,42 @@
-# LandslideRisk-48: Daily Inspection-Site Recommendation for Unmonitored Hillslopes
+# LandslideRisk-48: Value-Aware Inspection-Site Recommendation for Unmonitored Hillslopes
 
 ## Overview
 
-A regional geohazard team runs a field-inspection crew that can visit **3 hillslope monitoring sites per day**. Each morning, every site sends one reading: static terrain properties (elevation, slope, aspect, soil type), surface conditions (soil moisture, vegetation), air temperature, and nested rainfall-accumulation windows (1h, 6h, 24h, 72h). Your task is to **recommend, for each day, the 3 sites the crew should inspect**, ranked so that the sites where a landslide event occurs within 48 hours of the reading come first.
+A regional geohazard team runs one field crew. Each morning, every hillslope monitoring site sends one reading: static terrain properties (elevation, slope, aspect, soil type), surface conditions (soil moisture, vegetation), air temperature, and nested rainfall-accumulation windows (1h, 6h, 24h, 72h). Your task is to **recommend, for each day, which sites the crew should inspect**: any number of the 12 candidate sites, from none to all of them.
 
-Each day is one recommendation query, and the candidates are the 12 test sites, each described by its reading that day in `test_readings.csv`. A site is **relevant** for a day if a landslide event occurred at the site within 48 hours of that day's reading.
+This is a **value-aware recommendation** problem. Every recommended site costs crew time, and a recommendation only creates value if the site turns out to be **relevant** that day, meaning a landslide event occurs there within 48 hours of the reading:
+
+- Inspecting a site costs its `inspection_hours`: 1 hour on site plus access time that grows with elevation and slope (1.5–4.5 hours, given for every site).
+- Inspecting a relevant site is worth **15 crew-hours** (the value of an early warning).
+
+Recommending a site pays off only when `15 × P(landslide) > inspection_hours`. A good recommender therefore needs **calibrated probabilities**, recommends more sites on dangerous days and **none on quiet days**, and accounts for the fact that the steepest sites are both the riskiest and the most expensive to reach. A fixed top-K list cannot express this.
 
 What makes this hard:
 
-- **The candidate sites are new.** The data is split by site, and none of the 12 test sites appear in the training files. A recommender has to learn how terrain, soil and rainfall combine into failure risk in general, not memorise which sites tend to fail.
-- **Relevance is sparse.** About 11% of readings are relevant. The test queries are the 581 days on which at least one test site is relevant, with about 1.9 relevant sites out of 12 on average.
+- **The candidate sites are new.** The data is split by site, and none of the 12 test sites appear in the training files. The model has to learn how terrain, soil and rainfall combine into failure risk in general, not memorise which sites tend to fail.
+- **Asymmetric costs.** A missed landslide costs far more than a wasted inspection, but most site-days are quiet: about 11% of readings are relevant, and on about 20% of days none of the 12 test sites is relevant.
 - **Imperfect sensors.** About 5% of the sensor and weather values are missing. Rainfall is zero-inflated and heavy-tailed, and the extreme values are genuine storm readings, not errors.
 
 ## Evaluation
 
-Submissions are scored with **MAP@3** (mean average precision at 3, higher is better, range 0–1), averaged over all queries in `test.csv`. Every test query has at least one relevant site.
+Submissions are scored with **normalised net inspection value** (higher is better, range 0–1). The net value of a plan is the value of the relevant sites it inspects minus the hours of every inspection, summed over all test days. It is divided by the net value of the perfect plan, which inspects exactly the relevant sites, and floored at 0, the value of inspecting nothing.
 
 ~~~python
-def average_precision_at_3(recommended, relevant):
-    # recommended: list of 3 distinct location_ids, best first
-    # relevant: set of relevant location_ids for that day (non-empty)
-    hits, score = 0, 0.0
-    for rank, site in enumerate(recommended[:3], start=1):
-        if site in relevant:
-            hits += 1
-            score += hits / rank
-    return score / min(3, len(relevant))
+CATCH_VALUE = 15.0
 
-def evaluate(submission, truth):
-    # truth: {query_id: set of relevant location_ids}; submission: {query_id: [3 location_ids]}
-    return sum(average_precision_at_3(submission[q], truth[q]) for q in truth) / len(truth)
+def evaluate(plan, truth, inspection_hours):
+    # plan:  {query_id: set of location_ids to inspect (may be empty)}
+    # truth: {query_id: set of relevant location_ids (may be empty)}
+    # inspection_hours: {location_id: hours}
+    net = sum(
+        (CATCH_VALUE if site in truth[q] else 0.0) - inspection_hours[site]
+        for q in truth for site in plan[q] if site in inspection_hours  # non-candidates ignored
+    )
+    best = sum(CATCH_VALUE - inspection_hours[site] for q in truth for site in truth[q])
+    return max(0.0, net / best)
 ~~~
 
-For reference, a random order scores about 0.17, and ranking each day's sites by `rainfall_72h_mm` alone scores about 0.38.
+For reference, inspecting nothing scores 0, inspecting every site every day scores 0, and inspecting the top 3 sites by `rainfall_72h_mm` every day scores about 0.01.
 
 ## Dataset
 
@@ -40,13 +44,13 @@ All files are in `public/`. Query files have one row per day; readings files hav
 
 | File | Rows | Description |
 |------|------|-------------|
-| `train.csv` | 723 | Training queries: `query_id`, `date`, `candidate_sites` (the 40 training sites, space-separated) and the target `location_ids` (the relevant sites, space-separated) |
-| `test.csv` | 581 | Test queries: `query_id`, `date` and `candidate_sites` (the 12 test sites, space-separated) |
-| `train_readings.csv` | 29,240 | Readings of the 40 training sites, every day from 2024-01-01 to 2025-12-31 |
-| `test_readings.csv` | 8,772 | Readings of the 12 test sites, every day over the same period |
-| `sample_submission.csv` | 581 | Required submission format |
+| `train.csv` | 731 | Training queries, one per day from 2024-01-01 to 2025-12-31: `query_id`, `date`, `candidate_sites` (the 40 training sites) and the target `location_ids` (the relevant sites, or `none`) |
+| `test.csv` | 731 | Test queries, one per day over the same period: `query_id`, `date` and `candidate_sites` (the 12 test sites) |
+| `train_readings.csv` | 29,240 | Readings of the 40 training sites, every day |
+| `test_readings.csv` | 8,772 | Readings of the 12 test sites, every day |
+| `sample_submission.csv` | 731 | Required submission format |
 
-Queries are the days on which at least one candidate site is relevant (723 of 731 training days, 581 of 731 test days). The readings files cover every day, including days that are not queries, so each site's history is complete. A training reading is relevant when its `location_id` is listed in `location_ids` for its `query_id` in `train.csv`; readings on days that are not in `train.csv` are not relevant. `train_readings.csv` is sorted by `query_id` and `location_id`; `test_readings.csv` is shuffled.
+A training reading is relevant when its `location_id` is listed in `location_ids` for its `query_id` in `train.csv`. `train_readings.csv` is sorted by `query_id` and `location_id`; `test_readings.csv` is shuffled.
 
 ### Query columns (`train.csv`, `test.csv`)
 
@@ -55,7 +59,7 @@ Queries are the days on which at least one candidate site is relevant (723 of 73
 | `query_id` | string | Query identifier: `train_YYYY-MM-DD` in train files, `test_YYYY-MM-DD` in test files |
 | `date` | string | Query day, `YYYY-MM-DD` |
 | `candidate_sites` | string | Space-separated `location_id`s of that day's candidate sites |
-| `location_ids` | string | **Target**: space-separated `location_id`s of the relevant sites. `train.csv` only |
+| `location_ids` | string | **Target**: space-separated `location_id`s of the relevant sites, or `none`. `train.csv` only |
 
 ### Readings columns (`train_readings.csv`, `test_readings.csv`)
 
@@ -76,6 +80,7 @@ Queries are the days on which at least one candidate site is relevant (723 of 73
 | `rainfall_24h_mm` | float | Rainfall in the last 24 hours, mm (may be missing) |
 | `rainfall_72h_mm` | float | Rainfall in the last 72 hours, mm (may be missing) |
 | `temperature_c` | float | Air temperature, °C (may be missing) |
+| `inspection_hours` | float | Crew-hours to inspect the site: `1 + elevation_m / 1500 + slope_deg / 30`, rounded to 0.25 (constant per site) |
 
 When all four values are present, `rainfall_72h_mm ≥ rainfall_24h_mm ≥ rainfall_6h_mm ≥ rainfall_1h_mm`.
 
@@ -90,10 +95,10 @@ Submit a CSV file with the following format:
 | Column | Type | Description |
 |--------|------|-------------|
 | `query_id` | string | Query identifier from `test.csv`, e.g. `test_2024-01-03` |
-| `location_ids` | string | The 3 recommended `location_id`s, space-separated, best first (e.g. `1012 1001 1048`) |
+| `location_ids` | string | Space-separated `location_id`s of the sites to inspect that day (e.g. `1012 1048`), or `none` to inspect nothing |
 
 **Requirements**
-- Must contain exactly one row per `query_id` in `test.csv` (581 rows), in any order.
+- Must contain exactly one row per `query_id` in `test.csv` (731 rows), in any order.
 - Include a header row.
-- `location_ids` should list three different integers from that query's `candidate_sites`, best first. Only the first three distinct IDs are scored, and an ID that is not a relevant site for that day (including one outside the candidates) counts as a miss.
-- Missing `query_id` rows, duplicate `query_id` rows, or non-integer tokens make the submission invalid.
+- Each listed site is inspected once; repeated IDs count once, and IDs that are not among that day's `candidate_sites` are ignored.
+- Missing `query_id` rows, duplicate `query_id` rows, or tokens that are neither integers nor `none` make the submission invalid.
