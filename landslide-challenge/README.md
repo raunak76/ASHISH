@@ -13,7 +13,7 @@ Dataset: **LandslideRisk-48: Short-Term Landslide Probability from Rainfall & Te
 | 5 | answers mein sirf target; candidates column ka naam `candidate_sites`; train/test query IDs alag | ❌ "Train and test feature columns must match" |
 | 6 | `train.csv` = `test.csv` ke columns + target `location_ids`; readings alag `train_readings.csv` / `test_readings.csv` mein (same columns, label nahi) | ✅ 8/8 checks pass, ❌ novelty score 5 se kam |
 | 7 | Value-aware: har din kitni bhi sites (ya `none`), har site ki `inspection_hours` cost, catch pe 15 ghante | ❌ answers mein `none` ko missing maana; novelty 3/10 |
-| 8 (current) | **Har query = 1 hafta, crew ke paas 12 ghante/hafta** (rolling multi-day budget). Target `site_days` = `location_id@date` tokens; har hafte kam se kam 1 event, isliye koi khaali answer nahi | Checks dobara chalana hai |
+| 8 (final) | **Har query = 1 hafta, crew ke paas 12 ghante/hafta** (rolling multi-day budget). Target `site_days` = `location_id@date` tokens; har hafte kam se kam 1 event, isliye koi khaali answer nahi. "Technical focus" section VOI/greedy se fark batata hai | ✅ 8/8 checks pass, ❌ novelty abhi bhi 5 se kam |
 
 Recommendation kyun: Shipd Discord announcement (09/04/2026) mein khule domains: NLP, Computer Vision, Object Detection, **Recommendation**, Sequence to Sequence, Prompt Engineering, RAG, Fine-Tuning, From Scratch, LLM Evaluation. Iske alawa Shipd Eris ke public accepted challenges mein kai Recommendation/Ranking challenges hain, jaise "Coastal Sensor Signature Recommendation" (sensor data, MAP@5), "Biocatalytic Product Recommendation" aur "Biomedical Concept Evidence Ranking". Source: github.com/OmerFarukMerey/project-eris-shipd-csofm-solutions.
 
@@ -52,3 +52,17 @@ Recommendation kyun: Shipd Discord announcement (09/04/2026) mein khule domains:
 | Budget-aware (return/hour > tau), LR raw | 0.2805 |
 | **Budget-aware, LR engineered, tau = 1.2 (final)** | **0.2906** |
 | Budget-aware, LightGBM | 0.2672 |
+
+## Novelty ke liye test kiye gaye aur chhode gaye ideas
+
+Ye sab Shipd ke asli raw data pe measure kiye gaye. Inmein se koi bhi best strategy nahi badalta, isliye inhe jodna sirf dikhawa hota:
+
+| Idea | Nateeja |
+|---|---|
+| Daily hours budget (knapsack) | Ranking jitna hi score (0.592 vs 0.592) |
+| Nayi sites ke liye few-shot labelled window | Adaptation se koi gain nahi |
+| Soil moisture sirf training sites pe (partial observability) | AUC 0.7956 → 0.7931; soil moisture rainfall history se R² 0.90 tak predict ho jaata hai |
+| Weekly budget carryover | Balance-aware policy: validation pe +0.01, test pe 0 |
+| Adaptive inspection (pichhle inspection ka result agle faislon ka input) | Pichhle 1–7 din ke outcome jodne se AUC +0.0002: aaj ke sensors dene ke baad label site ke past outcomes se independent hai, latent state hai hi nahi |
+
+Matlab is dataset ka label aaj ke features ka formula hai, plus noise. Weekly budget hi ek twist hai jo asli farak dalta hai (myopic 0.17–0.19 → budget-aware 0.27–0.29).
