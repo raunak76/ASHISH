@@ -20,6 +20,20 @@ A per-day threshold such as "inspect if `15 × p > hours`" spends the budget too
 
 **Plans must be causal.** The decision to inspect a site on a given day may use only readings up to and including that day (plus anything learned from the training files). Readings from later days of the same week must not influence earlier decisions.
 
+## Technical focus
+
+The challenge couples two problems that standard landslide-warning and inspection-planning methods treat separately or not at all:
+
+1. **Generalisation to unseen sites.** Every test site is absent from training, so risk must transfer from terrain, soil and rainfall alone, with probabilities that stay calibrated on new sites. Site-specific thresholds and per-site models do not apply.
+2. **Sequential budget dynamics.** The weekly hours are a shared resource that is consumed in date order and cannot be recovered. Each decision is a stochastic online-knapsack step: inspecting today removes the option of a possibly more valuable inspection later in the week, and the decision cannot look ahead.
+
+Classical approaches miss the second part:
+
+- **Value-of-information (VOI) analysis** ranks candidate investigations once by expected value per cost, assuming the full candidate set is known in advance. Here the candidates arrive day by day, and a whole-week ranking would use future readings.
+- **Greedy cost–benefit rules** inspect whenever `15 × p > inspection_hours`. They ignore the option value of unspent hours and run the budget dry on the first worthwhile days.
+
+On site-grouped validation of the reference solution, the greedy cost–benefit rule scores about 0.17–0.19 and a fixed top-1-per-day list about 0.21. A causal rule that accounts for the shared budget scores about 0.27–0.29.
+
 What makes this hard:
 
 - **The candidate sites are new.** The data is split by site, and none of the 12 test sites appear in the training files.
