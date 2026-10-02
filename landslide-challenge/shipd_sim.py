@@ -46,17 +46,21 @@ for name, ok in checks.items():
 
 lab = pd.read_csv(raw / "train (1).csv")[["record_id", "landslide_risk_48h"]]
 rd = ter.merge(lab, on="record_id")
-def policy(mask):
-    picked = rd[mask].groupby(idc).location_id.agg(lambda s: " ".join(map(str, s)))
-    return pd.DataFrame({idc: te[idc], "location_ids": te[idc].map(picked).fillna("none")})
-rank_rain = rd.groupby(idc).rainfall_72h_mm.rank(ascending=False, method="first")
+rd["date"] = rd.timestamp.str[:10]
+rd = rd.sort_values(["date", "location_id"])
+def plan(mask, order=None):
+    sel = rd[mask] if order is None else rd[mask].sort_values(order, ascending=False)
+    toks = (sel.location_id.astype(str) + "@" + sel.date).groupby(sel[idc]).agg(" ".join)
+    return pd.DataFrame({idc: te[idc], "site_days": te[idc].map(toks).fillna("")})
+first_per_day = rd.groupby("date").cumcount() == 0
 print("scores: " + " | ".join(f"{k} {G.grade(v, ans):.4f}" for k, v in {
-    "sample": ss, "inspect nothing": policy(rd.record_id < 0), "inspect everything": policy(rd.record_id >= 0),
-    "random 1/day": policy(rd.groupby(idc).cumcount() == rng.integers(0, 12)),
-    "top-3 by rain72": policy(rank_rain <= 3), "top-1 by rain72": policy(rank_rain <= 1),
-    "perfect minus half the hits": policy((rd.landslide_risk_48h == 1) & (rd.record_id % 2 == 0)),
+    "sample": ss, "empty plan": plan(rd.record_id < 0), "inspect everything": plan(rd.record_id >= 0),
+    "first site every day": plan(first_per_day),
+    "relevant only, every other": plan((rd.landslide_risk_48h == 1) & (rd.record_id % 2 == 0)),
+    "relevant + 1 decoy/day": plan((rd.landslide_risk_48h == 1) | first_per_day),
 }.items()))
+print("weeks:", len(te), "| min relevant tokens per answer row:", ans.site_days.str.split().str.len().min())
 trr2 = trr.merge(lab, on="record_id")
-rel = {(q, int(s)) for q, sites in zip(tr[idc], tr["location_ids"]) if sites != "none" for s in sites.split()}
-derived = np.array([int((q, s) in rel) for q, s in zip(trr2[idc], trr2.location_id)])
+rel = {(int(t.split("@")[0]), t.split("@")[1]) for cell in tr["site_days"] for t in cell.split()}
+derived = np.array([int((s, d) in rel) for s, d in zip(trr2.location_id, trr2.timestamp.str[:10])])
 print("train labels recoverable from train.csv:", bool((derived == trr2.landslide_risk_48h.to_numpy()).all()))

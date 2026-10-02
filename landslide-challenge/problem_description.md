@@ -1,72 +1,86 @@
-# LandslideRisk-48: Value-Aware Inspection-Site Recommendation for Unmonitored Hillslopes
+# LandslideRisk-48: Budget-Constrained Weekly Inspection-Site Recommendation for Unmonitored Hillslopes
 
 ## Overview
 
-A regional geohazard team runs one field crew. Each morning, every hillslope monitoring site sends one reading: static terrain properties (elevation, slope, aspect, soil type), surface conditions (soil moisture, vegetation), air temperature, and nested rainfall-accumulation windows (1h, 6h, 24h, 72h). Your task is to **recommend, for each day, which sites the crew should inspect**: any number of the 12 candidate sites, from none to all of them.
+A regional geohazard team has one field crew with **12 hours per week** for slope inspections. Each morning, every hillslope monitoring site sends one reading: static terrain properties (elevation, slope, aspect, soil type), surface conditions (soil moisture, vegetation), air temperature, and nested rainfall-accumulation windows (1h, 6h, 24h, 72h). For each week, your task is to **recommend which sites the crew should inspect on which days**, choosing among 12 candidate sites × 7 days.
 
-This is a **value-aware recommendation** problem. Every recommended site costs crew time, and a recommendation only creates value if the site turns out to be **relevant** that day, meaning a landslide event occurs there within 48 hours of the reading:
+This is a **value-aware recommendation problem under a rolling multi-day budget**:
 
-- Inspecting a site costs its `inspection_hours`: 1 hour on site plus access time that grows with elevation and slope (1.5–4.5 hours, given for every site).
-- Inspecting a relevant site is worth **15 crew-hours** (the value of an early warning).
+- Inspecting a site costs its `inspection_hours`: 1 hour on site plus access time that grows with elevation and slope (1.5–4.5 hours).
+- Inspecting a site on a day it is **relevant**, meaning a landslide event occurs there within 48 hours of that day's reading, is worth **15 crew-hours** (the value of an early warning).
+- The week's plan is executed **in date order**. An inspection that no longer fits in the week's remaining hours is skipped.
 
-Recommending a site pays off only when `15 × P(landslide) > inspection_hours`. A good recommender therefore needs **calibrated probabilities**, recommends more sites on dangerous days and **none on quiet days**, and accounts for the fact that the steepest sites are both the riskiest and the most expensive to reach. A fixed top-K list cannot express this.
+Twelve hours buy only three or four inspections, while a typical week has about ten relevant site-days. Every hour spent on a Monday is unavailable for a storm on Thursday. A good plan has to:
+
+- estimate **calibrated** probabilities at sites it has never seen,
+- weigh expected value against each site's cost, and
+- decide how much budget to keep for later, potentially more valuable days.
+
+A per-day threshold such as "inspect if `15 × p > hours`" spends the budget too early, and a fixed top-K list ignores both risk levels and costs.
+
+**Plans must be causal.** The decision to inspect a site on a given day may use only readings up to and including that day (plus anything learned from the training files). Readings from later days of the same week must not influence earlier decisions.
 
 What makes this hard:
 
-- **The candidate sites are new.** The data is split by site, and none of the 12 test sites appear in the training files. The model has to learn how terrain, soil and rainfall combine into failure risk in general, not memorise which sites tend to fail.
-- **Asymmetric costs.** A missed landslide costs far more than a wasted inspection, but most site-days are quiet: about 11% of readings are relevant, and on about 20% of days none of the 12 test sites is relevant.
+- **The candidate sites are new.** The data is split by site, and none of the 12 test sites appear in the training files.
+- **Asymmetric costs and a shared budget.** Most site-days are quiet (about 11% of readings are relevant), but missing a landslide costs far more than a wasted inspection, and every inspection competes for the same weekly hours.
 - **Imperfect sensors.** About 5% of the sensor and weather values are missing. Rainfall is zero-inflated and heavy-tailed, and the extreme values are genuine storm readings, not errors.
 
 ## Evaluation
 
-Submissions are scored with **normalised net inspection value** (higher is better, range 0–1). The net value of a plan is the value of the relevant sites it inspects minus the hours of every inspection, summed over all test days. It is divided by the net value of the perfect plan, which inspects exactly the relevant sites, and floored at 0, the value of inspecting nothing.
+Submissions are scored with **normalised net inspection value** (higher is better, range 0–1). For each week, the listed inspections are executed in date order (in listed order within a day). Each executed inspection costs its `inspection_hours` and earns 15 if the site is relevant that day. An inspection is skipped if it does not fit in the week's remaining 12 hours. The total net value over all weeks is divided by that of the reference plan, which inspects exactly the relevant site-days in date order under the same budget. The result is clipped to [0, 1].
 
 ~~~python
-CATCH_VALUE = 15.0
+CATCH_VALUE, WEEKLY_BUDGET = 15.0, 12.0
 
-def evaluate(plan, truth, inspection_hours):
-    # plan:  {query_id: set of location_ids to inspect (may be empty)}
-    # truth: {query_id: set of relevant location_ids (may be empty)}
-    # inspection_hours: {location_id: hours}
-    net = sum(
-        (CATCH_VALUE if site in truth[q] else 0.0) - inspection_hours[site]
-        for q in truth for site in plan[q] if site in inspection_hours  # non-candidates ignored
-    )
-    best = sum(CATCH_VALUE - inspection_hours[site] for q in truth for site in truth[q])
-    return max(0.0, net / best)
+def run_week(plan, relevant, inspection_hours):
+    # plan: list of (date, location_id) in execution order; relevant: set of (date, location_id)
+    left, net = WEEKLY_BUDGET, 0.0
+    for day, site in plan:
+        hours = inspection_hours[site]
+        if hours <= left:
+            left -= hours
+            net += (CATCH_VALUE if (day, site) in relevant else 0.0) - hours
+    return net
+
+def evaluate(plans, truth, inspection_hours):
+    # plans / truth: {query_id: list of (date, location_id) sorted by date}
+    net = sum(run_week(plans[q], set(truth[q]), inspection_hours) for q in truth)
+    best = sum(run_week(truth[q], set(truth[q]), inspection_hours) for q in truth)
+    return min(1.0, max(0.0, net / best))
 ~~~
 
-For reference, inspecting nothing scores 0, inspecting every site every day scores 0, and inspecting the top 3 sites by `rainfall_72h_mm` every day scores about 0.01.
+Repeated site-days, sites that are not candidates, and dates outside the query's week are skipped without cost. For reference, an empty plan scores 0, and inspecting every site every day scores 0.
 
 ## Dataset
 
-All files are in `public/`. Query files have one row per day; readings files have one row per site per day.
+All files are in `public/`. Query files have one row per week; readings files have one row per site per day.
 
 | File | Rows | Description |
 |------|------|-------------|
-| `train.csv` | 731 | Training queries, one per day from 2024-01-01 to 2025-12-31: `query_id`, `date`, `candidate_sites` (the 40 training sites) and the target `location_ids` (the relevant sites, or `none`) |
-| `test.csv` | 731 | Test queries, one per day over the same period: `query_id`, `date` and `candidate_sites` (the 12 test sites) |
-| `train_readings.csv` | 29,240 | Readings of the 40 training sites, every day |
-| `test_readings.csv` | 8,772 | Readings of the 12 test sites, every day |
-| `sample_submission.csv` | 731 | Required submission format |
+| `train.csv` | 105 | Training queries, one per week from 2024-01-01 to 2025-12-31: `query_id`, `week_start`, `candidate_sites` (the 40 training sites) and the target `site_days` |
+| `test.csv` | 105 | Test queries for the same weeks: `query_id`, `week_start` and `candidate_sites` (the 12 test sites) |
+| `train_readings.csv` | 29,240 | Daily readings of the 40 training sites |
+| `test_readings.csv` | 8,772 | Daily readings of the 12 test sites |
+| `sample_submission.csv` | 105 | Required submission format |
 
-A training reading is relevant when its `location_id` is listed in `location_ids` for its `query_id` in `train.csv`. `train_readings.csv` is sorted by `query_id` and `location_id`; `test_readings.csv` is shuffled.
+Weeks run Monday to Sunday and are named after their Monday. The last week (starting 2025-12-29) has only three days. Every week contains at least one relevant site-day. A training reading is relevant when its `location_id@date` appears in `site_days` for its week in `train.csv`. `train_readings.csv` is sorted by date and `location_id`; `test_readings.csv` is shuffled.
 
 ### Query columns (`train.csv`, `test.csv`)
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `query_id` | string | Query identifier: `train_YYYY-MM-DD` in train files, `test_YYYY-MM-DD` in test files |
-| `date` | string | Query day, `YYYY-MM-DD` |
-| `candidate_sites` | string | Space-separated `location_id`s of that day's candidate sites |
-| `location_ids` | string | **Target**: space-separated `location_id`s of the relevant sites, or `none`. `train.csv` only |
+| `query_id` | string | Query identifier: `train_week_YYYY-MM-DD` in train files, `test_week_YYYY-MM-DD` in test files (the Monday of the week) |
+| `week_start` | string | Monday of the week, `YYYY-MM-DD` |
+| `candidate_sites` | string | Space-separated `location_id`s of the candidate sites |
+| `site_days` | string | **Target**: space-separated `location_id@YYYY-MM-DD` tokens for every relevant site-day of the week, in date order. `train.csv` only |
 
 ### Readings columns (`train_readings.csv`, `test_readings.csv`)
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `record_id` | int | Unique row identifier (carries no signal) |
-| `query_id` | string | Query the reading belongs to (`train_` or `test_` plus the date part of `timestamp`) |
+| `query_id` | string | Week query the reading belongs to |
 | `location_id` | int | Monitoring site (test sites never appear in train) |
 | `timestamp` | datetime | Reading time, `YYYY-MM-DD HH:MM:SS` |
 | `elevation_m` | float | Elevation in metres (constant per site) |
@@ -94,11 +108,11 @@ Submit a CSV file with the following format:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `query_id` | string | Query identifier from `test.csv`, e.g. `test_2024-01-03` |
-| `location_ids` | string | Space-separated `location_id`s of the sites to inspect that day (e.g. `1012 1048`), or `none` to inspect nothing |
+| `query_id` | string | Query identifier from `test.csv`, e.g. `test_week_2024-01-08` |
+| `site_days` | string | Space-separated `location_id@YYYY-MM-DD` tokens to inspect that week, e.g. `1037@2024-01-13 1046@2024-01-14`. Leave empty to inspect nothing |
 
 **Requirements**
-- Must contain exactly one row per `query_id` in `test.csv` (731 rows), in any order.
+- Must contain exactly one row per `query_id` in `test.csv` (105 rows), in any order.
 - Include a header row.
-- Each listed site is inspected once; repeated IDs count once, and IDs that are not among that day's `candidate_sites` are ignored.
-- Missing `query_id` rows, duplicate `query_id` rows, or tokens that are neither integers nor `none` make the submission invalid.
+- You may list more site-days than the budget allows. They are executed in date order, and those that no longer fit are skipped.
+- Missing `query_id` rows, duplicate `query_id` rows, or tokens that are not `integer@YYYY-MM-DD` make the submission invalid.

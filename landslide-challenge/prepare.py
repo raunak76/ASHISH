@@ -7,10 +7,10 @@ TARGET = "landslide_risk_48h"
 ID = "record_id"
 QUERY = "query_id"
 DATE = "date"
+WEEK = "week_start"
 COST = "inspection_hours"
 CANDIDATES = "candidate_sites"
-TARGET_COL = "location_ids"  # space-separated site IDs, or "none"
-NONE = "none"
+TARGET_COL = "site_days"  # space-separated "location_id@YYYY-MM-DD" tokens
 N_TEST_LOCATIONS = 12
 SEED = 48
 
@@ -52,24 +52,19 @@ def _pick_test_locations(df: pd.DataFrame) -> set:
     return {int(rng.choice(band)) for band in bands}
 
 
-def _join(ids) -> str:
-    ids = sorted(ids)
-    return " ".join(str(i) for i in ids) if ids else NONE
-
-
 def _queries(df: pd.DataFrame, with_labels: bool) -> pd.DataFrame:
-    """One row per query day: its candidate sites and, with labels, the relevant ones
-    ("none" if there are none)."""
-    days = df.groupby(QUERY, sort=True)
-    candidates = days["location_id"].agg(lambda s: " ".join(str(i) for i in sorted(s)))
+    """One row per query week: its candidate sites and, with labels, the relevant site-days."""
+    weeks = df.groupby(QUERY, sort=True)
+    candidates = weeks["location_id"].agg(lambda s: " ".join(str(i) for i in sorted(set(s))))
     out = pd.DataFrame({
         QUERY: candidates.index,
-        DATE: days[DATE].first().reindex(candidates.index).to_numpy(),
+        WEEK: weeks[WEEK].first().reindex(candidates.index).to_numpy(),
         CANDIDATES: candidates.to_numpy(),
     })
     if with_labels:
-        relevant = df[df[TARGET] == 1].groupby(QUERY)["location_id"].agg(list)
-        out[TARGET_COL] = [_join(relevant.get(q, [])) for q in out[QUERY]]
+        rel = df[df[TARGET] == 1].sort_values([DATE, "location_id"])
+        tokens = (rel["location_id"].astype(str) + "@" + rel[DATE]).groupby(rel[QUERY]).agg(" ".join)
+        out[TARGET_COL] = out[QUERY].map(tokens)
     return out
 
 
@@ -81,35 +76,40 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     df = df.drop(columns=[c for c in DROP_COLUMNS if c in df.columns])
     df[COST] = _inspection_hours(df)
     df[DATE] = df["timestamp"].str[:10]
+    day = pd.to_datetime(df[DATE])
+    df[WEEK] = (day - pd.to_timedelta(day.dt.dayofweek, unit="D")).dt.strftime("%Y-%m-%d")
     df = df.sort_values([DATE, "location_id"], kind="mergesort").reset_index(drop=True)
 
     # Whole sites go to test: no test location appears in train.
     test_locations = _pick_test_locations(df)
     is_test = df["location_id"].isin(test_locations)
 
-    # One query per day and split ("train_YYYY-MM-DD" / "test_YYYY-MM-DD"), so train
-    # and test query IDs never overlap. Every day is a query, including quiet days,
-    # where the best recommendation is to inspect nothing.
-    df.insert(1, QUERY, is_test.map({True: "test_", False: "train_"}) + df[DATE])
+    # One query per Monday-to-Sunday week and split ("train_week_YYYY-MM-DD" /
+    # "test_week_YYYY-MM-DD", dated by the Monday), so train and test IDs never overlap.
+    df.insert(1, QUERY, is_test.map({True: "test_week_", False: "train_week_"}) + df[WEEK])
     train = df[~is_test]
     test = df[is_test]
 
     # Queries: train.csv and test.csv share the same columns; train.csv adds the target.
-    _queries(train, with_labels=True).to_csv(public / "train.csv", index=False)
+    # Every week has at least one relevant site-day, so the target is never empty.
+    train_queries = _queries(train, with_labels=True)
     answers = _queries(test, with_labels=True)
-    answers[[QUERY, DATE, CANDIDATES]].to_csv(public / "test.csv", index=False)
+    if train_queries[TARGET_COL].isna().any() or answers[TARGET_COL].isna().any():
+        raise ValueError("Found a week without any relevant site-day")
+    train_queries.to_csv(public / "train.csv", index=False)
+    answers[[QUERY, WEEK, CANDIDATES]].to_csv(public / "test.csv", index=False)
 
     # Site readings (one row per site and day), identical columns for train and test
     # and no label column: relevance comes only from train.csv.
-    readings = [c for c in df.columns if c not in (DATE, TARGET)]
+    readings = [c for c in df.columns if c not in (DATE, WEEK, TARGET)]
     train[readings].to_csv(public / "train_readings.csv", index=False)
     test[readings].sample(frac=1.0, random_state=SEED).to_csv(public / "test_readings.csv", index=False)
 
-    # Format example only: one arbitrary candidate site per day.
+    # Format example only: one arbitrary candidate site on the Monday of each week.
     rng = np.random.default_rng(SEED)
     sites = np.array(sorted(test_locations))
     sample = answers[[QUERY]].copy()
-    sample[TARGET_COL] = [str(s) for s in rng.choice(sites, size=len(sample))]
+    sample[TARGET_COL] = [f"{s}@{w}" for s, w in zip(rng.choice(sites, size=len(sample)), answers[WEEK])]
     sample.to_csv(public / "sample_submission.csv", index=False)
 
     # Only the target goes into answers: any other column that also appears in the
