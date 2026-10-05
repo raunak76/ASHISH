@@ -25,8 +25,10 @@ EPOCHS = int(os.environ.get("EPOCHS", "8"))
 N_MODELS = int(os.environ.get("N_MODELS", "3"))
 CTX_LAYERS = int(os.environ.get("CTX_LAYERS", "2"))
 USE_GOLD_STATS = os.environ.get("GOLDSTATS", "1") == "1"
-SELF_TRAIN = int(os.environ.get("SELF_TRAIN", "1"))
+SELF_TRAIN = int(os.environ.get("SELF_TRAIN", "2"))
 CONF = float(os.environ.get("CONF", "0.5"))
+PSEUDO_LABEL = os.environ.get("PL", "1") == "1"
+PL_CONF = float(os.environ.get("PL_CONF", "0.5"))
 PSEUDO = int(os.environ.get("PSEUDO", "0"))
 TRI = os.environ.get("TRI", "1") == "1"
 EMBW = float(os.environ.get("EMBW", "1"))
@@ -584,8 +586,8 @@ def main():
         labels[cid] = np.array([[pos[egold[e]["lead_id"]], pos[egold[e]["companion_id"]], TIERS.index(egold[e]["tier"])]
                                 for e in cs["entry_ids"]], np.int64)
 
-    def run_round(cases, tag):
-        nets = [train_model(cases, labels, list(fit), SEED + s) for s in range(N_MODELS)]
+    def run_round(cases, tag, extra_fit=()):
+        nets = [train_model(cases, labels, list(fit) + list(extra_fit), SEED + s) for s in range(N_MODELS)]
         pred = predict(nets, cases, list(target))
         if VAL:
             vg = {e: egold[e] for c in target for e in cases[c]["entry_ids"]}
@@ -608,7 +610,19 @@ def main():
                 if p["comp_p"] >= CONF:
                     extra.append((cid, eid, ereg[eid], cmap[cid][p["companion_id"]]))
         cases = featurize(extra)
-        pred = run_round(cases, f"round{rnd + 2}")
+        extra_fit = []
+        if PSEUDO_LABEL:
+            # confident target cases also become training cases with predicted labels
+            for cid in target:
+                ps = [pred[e] for e in cases[cid]["entry_ids"]]
+                if np.mean([min(p["lead_p"], p["comp_p"]) for p in ps]) < PL_CONF:
+                    continue
+                pos = {x: j for j, x in enumerate(cases[cid]["card_ids"])}
+                labels[cid] = np.array([[pos[p["lead_id"]], pos[p["companion_id"]], TIERS.index(p["tier"])]
+                                        for p in ps], np.int64)
+                extra_fit.append(cid)
+            print("pseudo-labeled cases", len(extra_fit), flush=True)
+        pred = run_round(cases, f"round{rnd + 2}", extra_fit)
     if VAL:
         return
     rows = []
