@@ -22,9 +22,11 @@ NB = 1 << 18
 SEED = 1234
 VAL = os.environ.get("VAL", "0") == "1"
 EPOCHS = int(os.environ.get("EPOCHS", "8"))
-N_MODELS = int(os.environ.get("N_MODELS", "5"))
+N_MODELS = int(os.environ.get("N_MODELS", "3"))
 CTX_LAYERS = int(os.environ.get("CTX_LAYERS", "2"))
 USE_GOLD_STATS = os.environ.get("GOLDSTATS", "1") == "1"
+SELF_TRAIN = int(os.environ.get("SELF_TRAIN", "1"))
+CONF = float(os.environ.get("CONF", "0.5"))
 PSEUDO = int(os.environ.get("PSEUDO", "0"))
 TRI = os.environ.get("TRI", "1") == "1"
 EMBW = float(os.environ.get("EMBW", "1"))
@@ -136,15 +138,55 @@ NPR = 25
 REG = {}
 
 
-def build_region_stats(raw, gold_works=()):
-    """Corpus statistics of how often each creator / title token / exact text
-    co-occurs with a region. Built from known works (inputs) plus training answer
-    works; each training case's own answer contribution is recorded so it can be
-    subtracted (out-of-fold) when featurizing that case."""
+def _entry_items(works):
+    items = set()
+    for k in works:
+        items |= {"c:" + x for x in ctoks(k["creators"])}
+        items |= {"t:" + t for t in toks(k["title"]) if t not in STOP and len(t) > 2 and t != "xentryx"}
+    return sorted(items)[:60]
+
+
+def build_region_stats(raw, extra_works=()):
+    """Corpus statistics used as model inputs:
+    - region association of each creator / title token / exact text,
+    - within-entry co-occurrence (PMI) of creators and title tokens.
+    Built from the known works of every case (public inputs) plus `extra_works`
+    = (case_id, entry_id, region, work) from training answers and, in the
+    self-training round, confident model predictions on unlabeled cases.
+    Each case's own extra contribution is recorded so it is subtracted when
+    featurizing that same case (out-of-fold), so a case never sees its own
+    answers or its own predictions."""
     from collections import defaultdict, Counter
     cre, tok, txt = defaultdict(Counter), defaultdict(Counter), defaultdict(Counter)
+    co = defaultdict(Counter)
+    df = Counter()
     own = defaultdict(Counter)
-    for cid, r, k in gold_works:
+    own_co = defaultdict(Counter)
+    regions = Counter()
+    n_ent = 0
+    known = {}
+    for c in raw:
+        for e in c["entries"]:
+            known[e["entry_id"]] = e["known_works"]
+            r = e["region"]
+            regions[r] += 1
+            n_ent += 1
+            for k in e["known_works"]:
+                for x in ctoks(k["creators"]):
+                    cre[x][r] += 1
+                for t in set(toks(k["title"])):
+                    if t not in STOP and len(t) > 2:
+                        tok[t][r] += 1
+                txt[(k["title"], k["creators"])][r] += 1
+            items = _entry_items(e["known_works"])
+            for x in items:
+                df[x] += 1
+                for y in items:
+                    if x != y:
+                        co[x][y] += 1
+    by_entry = defaultdict(list)
+    for cid, eid, r, k in extra_works:
+        by_entry[(cid, eid, r)].append(k)
         for x in ctoks(k["creators"]):
             cre[x][r] += 1
             own[cid][("c", x, r)] += 1
@@ -154,39 +196,18 @@ def build_region_stats(raw, gold_works=()):
                 own[cid][("t", t, r)] += 1
         txt[(k["title"], k["creators"])][r] += 1
         own[cid][("x", (k["title"], k["creators"]), r)] += 1
-    REG["own"] = own
-    regions = Counter()
-    for c in raw:
-        for e in c["entries"]:
-            r = e["region"]
-            regions[r] += 1
-            for k in e["known_works"]:
-                for x in ctoks(k["creators"]):
-                    cre[x][r] += 1
-                for t in set(toks(k["title"])):
-                    if t not in STOP and len(t) > 2:
-                        tok[t][r] += 1
-                txt[(k["title"], k["creators"])][r] += 1
-    co = defaultdict(Counter)
-    df = Counter()
-    n_ent = 0
-    for c in raw:
-        for e in c["entries"]:
-            n_ent += 1
-            items = set()
-            for k in e["known_works"]:
-                items |= {"c:" + x for x in ctoks(k["creators"])}
-                items |= {"t:" + t for t in toks(k["title"]) if t not in STOP and len(t) > 2 and t != "xentryx"}
-            for x in items:
-                df[x] += 1
-            items = sorted(items)[:60]
-            for x in items:
-                for y in items:
-                    if x != y:
-                        co[x][y] += 1
-    REG.update(co=co, df=df, n_ent=n_ent)
+    for (cid, eid, r), works in by_entry.items():
+        items = _entry_items(list(known.get(eid, [])) + works)
+        base = set(_entry_items(known.get(eid, [])))
+        for x in items:
+            for y in items:
+                if x != y and not (x in base and y in base):
+                    co[x][y] += 1
+                    own_co[cid][(x, y)] += 1
     tot = sum(regions.values())
-    REG.update(cre=cre, tok=tok, txt=txt, prior={r: v / tot for r, v in regions.items()})
+    REG.clear()
+    REG.update(cre=cre, tok=tok, txt=txt, prior={r: v / tot for r, v in regions.items()}, own=own,
+               own_co=own_co, co=co, df=df, n_ent=n_ent)
 
 
 def region_feats(region, c, ct, cc, own):
@@ -221,7 +242,7 @@ def region_feats(region, c, ct, cc, own):
             math.log(tv / prior) if tn else 0.0, math.log1p(tn)]
 
 
-def cooc_feats(ei, ct, cc):
+def cooc_feats(ei, ct, cc, own_co):
     co, df, N = REG["co"], REG["df"], REG["n_ent"]
     out = []
     cards = (["c:" + x for x in cc], ["t:" + t for t in ct if t != "xentryx"])
@@ -235,7 +256,9 @@ def cooc_feats(ei, ct, cc):
                     continue
                 for y in ej:
                     v = d.get(y, 0)
-                    if v:
+                    if v and own_co:
+                        v -= own_co.get((x, y), 0)
+                    if v > 0 and df[x] and df[y]:
                         pmi = math.log(v * N / (df[x] * df[y]))
                         sm += max(pmi, 0) * min(v, 3) / 3
                         m = max(m, pmi)
@@ -244,7 +267,8 @@ def cooc_feats(ei, ct, cc):
 
 
 def build_case(c):
-    own = REG.get("own", {}).get(c["case_id"])
+    own = REG["own"].get(c["case_id"])
+    own_co = REG["own_co"].get(c["case_id"])
     E = c["entries"]
     C = c["cards"]
     infos = [entry_info(e) for e in E]
@@ -254,7 +278,7 @@ def build_case(c):
     raw = np.zeros((len(E), len(C), NPR), np.float32)
     for i, ei in enumerate(infos):
         for j, x in enumerate(C):
-            raw[i, j] = pair_raw(ei, x, cts[j], ccs[j], cys[j]) + region_feats(ei["region"], x, cts[j], ccs[j], own) + cooc_feats(ei, cts[j], ccs[j])
+            raw[i, j] = pair_raw(ei, x, cts[j], ccs[j], cys[j]) + region_feats(ei["region"], x, cts[j], ccs[j], own) + cooc_feats(ei, cts[j], ccs[j], own_co)
     # contextual: relative to other entries for the same card and other cards for same entry
     mx_e = raw.max(0, keepdims=True)
     mx_c = raw.max(1, keepdims=True)
@@ -487,7 +511,8 @@ def predict(nets, cases, idx):
             cs_ = cases[ci]
             for i in range(NE):
                 out[cs_["entry_ids"][i]] = dict(lead_id=cs_["card_ids"][lead[i]], companion_id=cs_["card_ids"][comp[i]],
-                                                tier=TIERS[tiers[i]])
+                                                tier=TIERS[tiers[i]], lead_p=float(np.exp(LP[k][i, lead[i]])),
+                                                comp_p=float(np.exp(CP[k][i, comp[i]])))
     return out
 
 
@@ -524,90 +549,68 @@ def main():
     train_cases = sorted(set(train.case_id))
     test_cases = sorted(set(test.case_id))
     all_ids = train_cases + test_cases
-    val_cases = set()
     if VAL:
         tc = list(train_cases)
         random.Random(0).shuffle(tc)
-        val_cases = set(tc[:200])
-    gold_works = []
-    if USE_GOLD_STATS:
-        ereg = {e["entry_id"]: e["region"] for c in raw for e in c["entries"]}
-        cmap = {c["case_id"]: {x["card_id"]: x for x in c["cards"]} for c in raw}
-        for r in train.itertuples():
-            if r.case_id in val_cases:
-                continue
-            g = gold[r.target_id]
-            for role in ("lead_id", "companion_id"):
-                gold_works.append((r.case_id, ereg[r.entry_id], cmap[r.case_id][g[role]]))
-    build_region_stats(raw, gold_works)
-    cases = {}
-    for k, cid in enumerate(all_ids):
-        cases[cid] = build_case(raw_by_id[cid])
-    print("built", len(cases), flush=True)
-    egold = {}
-    entry_case = {}
+        target, fit = tc[:200], tc[200:]
+    else:
+        target, fit = test_cases, train_cases
+    egold, entry_case = {}, {}
     for r in train.itertuples():
         egold[r.entry_id] = gold[r.target_id]
         entry_case[r.entry_id] = r.case_id
+    ereg = {e["entry_id"]: e["region"] for c in raw for e in c["entries"]}
+    cmap = {c["case_id"]: {x["card_id"]: x for x in c["cards"]} for c in raw}
+    fit_set = set(fit)
+    gold_works = []
+    if USE_GOLD_STATS:
+        for r in train.itertuples():
+            if r.case_id in fit_set:
+                g = gold[r.target_id]
+                for role in ("lead_id", "companion_id"):
+                    gold_works.append((r.case_id, r.entry_id, ereg[r.entry_id], cmap[r.case_id][g[role]]))
+
+    def featurize(extra):
+        build_region_stats(raw, extra)
+        cs = {cid: build_case(raw_by_id[cid]) for cid in all_ids}
+        print("built", len(cs), "extra works", len(extra), flush=True)
+        return cs
+
     labels = {}
-    rng = random.Random(7)
-    card_pool = [(c["case_id"], {k: x[k] for k in ("title", "creators", "year")}) for c in raw for x in c["cards"]]
-    pseudo_ids = []
-    for rep in range(PSEUDO):
-        for cid in all_ids:
-            pc, pl = make_pseudo(raw_by_id[cid], rng, card_pool)
-            pid = f"{cid}_p{rep}"
-            cases[pid] = pc
-            labels[pid] = pl
-            pseudo_ids.append(pid)
-    print("pseudo", len(pseudo_ids), flush=True)
-    for cid in train_cases:
+    cases = featurize(gold_works)
+    for cid in fit:
         cs = cases[cid]
         pos = {x: j for j, x in enumerate(cs["card_ids"])}
-        lab = []
-        for eid in cs["entry_ids"]:
-            g = egold[eid]
-            lab.append([pos[g["lead_id"]], pos[g["companion_id"]], TIERS.index(g["tier"])])
-        labels[cid] = np.array(lab, np.int64)
+        labels[cid] = np.array([[pos[egold[e]["lead_id"]], pos[egold[e]["companion_id"]], TIERS.index(egold[e]["tier"])]
+                                for e in cs["entry_ids"]], np.int64)
+
+    def run_round(cases, tag):
+        nets = [train_model(cases, labels, list(fit), SEED + s) for s in range(N_MODELS)]
+        pred = predict(nets, cases, list(target))
+        if VAL:
+            vg = {e: egold[e] for c in target for e in cases[c]["entry_ids"]}
+            L = np.mean([pred[e]["lead_id"] == vg[e]["lead_id"] for e in vg])
+            R = np.mean([pred[e]["companion_id"] == vg[e]["companion_id"] for e in vg])
+            T = np.mean([pred[e]["tier"] == vg[e]["tier"] for e in vg])
+            print(tag, "VAL score", score(pred, vg, entry_case), "lead", L, "comp", R, "tier", T, flush=True)
+        return pred
+
+    pred = run_round(cases, "round1")
+    for rnd in range(SELF_TRAIN):
+        # self-training on unlabeled target cases: confident predictions become
+        # extra corpus works (never used for the case that produced them)
+        extra = list(gold_works)
+        for cid in target:
+            for eid in cases[cid]["entry_ids"]:
+                p = pred[eid]
+                if p["lead_p"] >= CONF:
+                    extra.append((cid, eid, ereg[eid], cmap[cid][p["lead_id"]]))
+                if p["comp_p"] >= CONF:
+                    extra.append((cid, eid, ereg[eid], cmap[cid][p["companion_id"]]))
+        cases = featurize(extra)
+        pred = run_round(cases, f"round{rnd + 2}")
     if VAL:
-        rng = random.Random(0)
-        tc = list(train_cases)
-        rng.shuffle(tc)
-        va, tr = tc[:200], tc[200:]
-        nets = [train_model(cases, labels, tr + pseudo_ids, SEED + s) for s in range(N_MODELS)]
-        pred = predict(nets, cases, va)
-        vg = {e: egold[e] for c in va for e in cases[c]["entry_ids"]}
-        print("VAL score", score(pred, vg, entry_case))
-        L = np.mean([pred[e]["lead_id"] == vg[e]["lead_id"] for e in vg])
-        R = np.mean([pred[e]["companion_id"] == vg[e]["companion_id"] for e in vg])
-        T = np.mean([pred[e]["tier"] == vg[e]["tier"] for e in vg])
-        print("lead", L, "comp", R, "tier", T)
-        import collections
-        cnt = collections.Counter()
-        for c in va:
-            gl = {egold[e]["lead_id"]: "lead" for e in cases[c]["entry_ids"]}
-            gl.update({egold[e]["companion_id"]: "comp" for e in cases[c]["entry_ids"]})
-            ge = {}
-            for e in cases[c]["entry_ids"]:
-                ge[egold[e]["lead_id"]] = e
-                ge[egold[e]["companion_id"]] = e
-            for e in cases[c]["entry_ids"]:
-                for r in ("lead_id", "companion_id"):
-                    pc = pred[e][r]
-                    if pc == egold[e][r]:
-                        cnt[r, "ok"] += 1
-                    elif pc not in gl:
-                        cnt[r, "alt"] += 1
-                    elif ge[pc] == e:
-                        cnt[r, "swap"] += 1
-                    else:
-                        cnt[r, "other_entry_" + gl[pc]] += 1
-        for k, v in sorted(cnt.items()):
-            print(k, v)
-        pickle_out = Path(os.environ.get("DUMP", "/dev/null"))
         return
-    nets = [train_model(cases, labels, train_cases + pseudo_ids, SEED + s) for s in range(N_MODELS)]
-    pred = predict(nets, cases, test_cases)
     rows = []
     for r in test.itertuples():
         p = pred[r.entry_id]
