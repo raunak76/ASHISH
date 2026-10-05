@@ -21,8 +21,9 @@ TIERS = ["long_grammar", "grammar", "grammar_sketch", "phonology_or_text", "word
 NB = 1 << 18
 SEED = 1234
 VAL = os.environ.get("VAL", "0") == "1"
-EPOCHS = int(os.environ.get("EPOCHS", "5"))
-N_MODELS = int(os.environ.get("N_MODELS", "3"))
+EPOCHS = int(os.environ.get("EPOCHS", "8"))
+N_MODELS = int(os.environ.get("N_MODELS", "5"))
+CTX_LAYERS = int(os.environ.get("CTX_LAYERS", "2"))
 TRI = os.environ.get("TRI", "1") == "1"
 EMBW = float(os.environ.get("EMBW", "1"))
 DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -197,6 +198,11 @@ class Net(nn.Module):
         self.edrop = nn.Dropout(0.3)
         self.mlp = nn.Sequential(nn.Linear(hin, 256), nn.GELU(), nn.Dropout(0.1), nn.Linear(256, 128), nn.GELU())
         self.role = nn.Linear(128, 2)
+        self.typ = nn.Parameter(torch.zeros(2, d))
+        self.ctx = nn.TransformerEncoder(nn.TransformerEncoderLayer(d, 4, 2 * d, 0.1, batch_first=True,
+                                                                    activation="gelu"), CTX_LAYERS)
+        self.pagg = nn.Linear(npf, d)
+        self.used = nn.Linear(d, 1)
         self.tier = nn.Sequential(nn.Linear(128 + d, 128), nn.GELU(), nn.Linear(128, len(TIERS)))
 
     def bag(self, ids):
@@ -209,6 +215,13 @@ class Net(nn.Module):
         e = self.pe(self.bag(etok))  # B,5,d
         c = self.pc(torch.cat([self.bag(ctok), cf], -1))  # B,18,d
         B, NE, NC, _ = pf.shape
+        if CTX_LAYERS > 0:
+            ea = self.pagg(pf).mean(2)
+            ca = self.pagg(pf).mean(1)
+            z = torch.cat([e + ea + self.typ[0], c + ca + self.typ[1]], 1)
+            z = self.ctx(z)
+            e, c = e + z[:, :NE], c + z[:, NE:]
+        self._used = self.used(c).squeeze(-1)
         ee = e.unsqueeze(2).expand(B, NE, NC, e.shape[-1])
         cc = c.unsqueeze(1).expand(B, NE, NC, c.shape[-1])
         cff = cf.unsqueeze(1).expand(B, NE, NC, cf.shape[-1])
@@ -263,7 +276,11 @@ def train_model(cases, labels, idx, seed):
             hsel = hdn.gather(2, lab[..., 0].view(B, NE, 1, 1).expand(B, NE, 1, hdn.shape[-1])).squeeze(2)
             tl = net.tier_logits(hsel, e)
             l5 = F.cross_entropy(tl.reshape(B * NE, -1), lab[..., 2].reshape(-1))
-            loss = l1 + l2 + 0.3 * (l3 + l4) + l5
+            ut = torch.zeros(B, NC, device=DEV)
+            ut.scatter_(1, lab[..., 0], 1.0)
+            ut.scatter_(1, lab[..., 1], 1.0)
+            l6 = F.binary_cross_entropy_with_logits(net._used, ut)
+            loss = l1 + l2 + 0.3 * (l3 + l4) + l5 + 0.5 * l6
             opt.zero_grad()
             loss.backward()
             opt.step()
