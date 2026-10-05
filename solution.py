@@ -24,6 +24,7 @@ VAL = os.environ.get("VAL", "0") == "1"
 EPOCHS = int(os.environ.get("EPOCHS", "8"))
 N_MODELS = int(os.environ.get("N_MODELS", "5"))
 CTX_LAYERS = int(os.environ.get("CTX_LAYERS", "2"))
+PSEUDO = int(os.environ.get("PSEUDO", "0"))
 TRI = os.environ.get("TRI", "1") == "1"
 EMBW = float(os.environ.get("EMBW", "1"))
 DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -130,7 +131,99 @@ def pair_raw(ei, c, ct, cc, cy):
     return [float(ov_c), float(ov_c > 0), float(ov_t), jac_t, float(lab_ov), best, dy, hy, max(js), sum(js) / len(js), cs]
 
 
-NPR = 11
+NPR = 21
+REG = {}
+
+
+def build_region_stats(raw):
+    """Corpus statistics from known works only (inputs, no answers):
+    how often each creator / title token / exact text co-occurs with a region."""
+    from collections import defaultdict, Counter
+    cre, tok, txt = defaultdict(Counter), defaultdict(Counter), defaultdict(Counter)
+    regions = Counter()
+    for c in raw:
+        for e in c["entries"]:
+            r = e["region"]
+            regions[r] += 1
+            for k in e["known_works"]:
+                for x in ctoks(k["creators"]):
+                    cre[x][r] += 1
+                for t in set(toks(k["title"])):
+                    if t not in STOP and len(t) > 2:
+                        tok[t][r] += 1
+                txt[(k["title"], k["creators"])][r] += 1
+    co_c, co_t = defaultdict(Counter), defaultdict(Counter)
+    tdf = Counter()
+    for c in raw:
+        for e in c["entries"]:
+            cs_ = set()
+            ts_ = set()
+            for k in e["known_works"]:
+                cs_ |= ctoks(k["creators"])
+                ts_ |= {t for t in toks(k["title"]) if t not in STOP and len(t) > 2 and t != "xentryx"}
+            for a in cs_:
+                for b in cs_:
+                    if a != b:
+                        co_c[a][b] += 1
+            for t in ts_:
+                tdf[t] += 1
+            ts_ = sorted(ts_)[:40]
+            for a in ts_:
+                for b in ts_:
+                    if a != b:
+                        co_t[a][b] += 1
+    REG.update(co_c=co_c, co_t=co_t, tdf=tdf)
+    tot = sum(regions.values())
+    REG.update(cre=cre, tok=tok, txt=txt, prior={r: v / tot for r, v in regions.items()})
+
+
+def region_feats(region, c, ct, cc):
+    prior = REG["prior"].get(region, 0.1)
+
+    def p(counter):
+        n = sum(counter.values())
+        return (counter.get(region, 0) + prior) / (n + 1), n
+
+    best_c, nc = prior, 0
+    for x in cc:
+        if x in REG["cre"]:
+            v, n = p(REG["cre"][x])
+            if n > nc:
+                best_c, nc = v, n
+    vals = []
+    for t in ct:
+        if t in REG["tok"]:
+            v, n = p(REG["tok"][t])
+            if n >= 2:
+                vals.append(math.log(v / prior))
+    tv, tn = p(REG["txt"].get((c["title"], c["creators"]), {}))
+    return [math.log(best_c / prior), math.log1p(nc), sum(vals), max(vals) if vals else 0.0,
+            math.log(tv / prior) if tn else 0.0, math.log1p(tn)]
+
+
+def cooc_feats(ei, ct, cc):
+    co_c, co_t, tdf = REG["co_c"], REG["co_t"], REG["tdf"]
+    cm, csum = 0.0, 0.0
+    for x in cc:
+        d = co_c.get(x)
+        if d:
+            for y in ei["kc"]:
+                v = d.get(y, 0)
+                if v:
+                    csum += v
+                    cm = max(cm, v)
+    tm, tsum = 0.0, 0.0
+    for a in ct:
+        d = co_t.get(a)
+        if not d:
+            continue
+        for b in ei["kt"]:
+            v = d.get(b, 0)
+            if v:
+                pmi = math.log(v * 6000.0 / (tdf[a] * tdf[b]))
+                tsum += max(pmi, 0)
+                tm = max(tm, pmi)
+    return [math.log1p(cm), math.log1p(csum), tm, tsum / (1 + len(ct))]
 
 
 def build_case(c):
@@ -143,7 +236,7 @@ def build_case(c):
     raw = np.zeros((len(E), len(C), NPR), np.float32)
     for i, ei in enumerate(infos):
         for j, x in enumerate(C):
-            raw[i, j] = pair_raw(ei, x, cts[j], ccs[j], cys[j])
+            raw[i, j] = pair_raw(ei, x, cts[j], ccs[j], cys[j]) + region_feats(ei["region"], x, cts[j], ccs[j]) + cooc_feats(ei, cts[j], ccs[j])
     # contextual: relative to other entries for the same card and other cards for same entry
     mx_e = raw.max(0, keepdims=True)
     mx_c = raw.max(1, keepdims=True)
@@ -177,6 +270,36 @@ def build_case(c):
         etok.append(ids[:256] or [0])
     return dict(pf=pf, cf=cf, ctok=ctok, etok=etok, card_ids=[x["card_id"] for x in C],
                 entry_ids=[e["entry_id"] for e in E])
+
+
+def make_pseudo(c, rng, card_pool):
+    """Self-supervised case from unlabeled inputs: hide one known work per entry
+    among decoy cards from other cases; the model must find it (companion role)."""
+    ents, held = [], []
+    for e in c["entries"]:
+        j = rng.randrange(len(e["known_works"]))
+        kw = [k for i, k in enumerate(e["known_works"]) if i != j]
+        ents.append(dict(entry_id=e["entry_id"] + "_p", labels=e["labels"], region=e["region"], known_works=kw))
+        held.append(dict(e["known_works"][j]))
+    cards = []
+    for i, k in enumerate(held):
+        k["card_id"] = f"p{i}"
+        cards.append(k)
+    while len(cards) < 18:
+        x = rng.choice(card_pool)
+        if x[0] != c["case_id"]:
+            cards.append(dict(x[1], card_id=f"d{len(cards)}"))
+    rng.shuffle(cards)
+    pos = {x["card_id"]: i for i, x in enumerate(cards)}
+    lab = np.array([[-1, pos[f"p{i}"], -1] for i in range(len(ents))], np.int64)
+    return build_case(dict(case_id=c["case_id"] + "_p", entries=ents, cards=cards)), lab
+
+
+def _ce(logits, target):
+    m = target >= 0
+    if m.sum() == 0:
+        return logits.sum() * 0
+    return F.cross_entropy(logits[m], target[m])
 
 
 def pad(lists, L):
@@ -266,21 +389,25 @@ def train_model(cases, labels, idx, seed):
             lab = torch.tensor(np.stack([labels[i] for i in bi])).to(DEV)  # B,5,3
             ls, cs, hdn, e = net(pf, cf, ctok, etok)
             B, NE, NC = ls.shape
-            l1 = F.cross_entropy(ls.reshape(B * NE, NC), lab[..., 0].reshape(-1))
-            l2 = F.cross_entropy(cs.reshape(B * NE, NC), lab[..., 1].reshape(-1))
-            # card-side: each card's role distribution across entries
-            l3 = F.cross_entropy(ls.transpose(1, 2).reshape(B * NC, NE)[_cardmask(lab[..., 0], NC)],
-                                 _cardtarget(lab[..., 0], NC)) if True else 0
+            real = lab[:, 0, 0] >= 0
+            l1 = _ce(ls.reshape(B * NE, NC), lab[..., 0].reshape(-1))
+            l2 = _ce(cs.reshape(B * NE, NC), lab[..., 1].reshape(-1))
             l4 = F.cross_entropy(cs.transpose(1, 2).reshape(B * NC, NE)[_cardmask(lab[..., 1], NC)],
                                  _cardtarget(lab[..., 1], NC))
-            hsel = hdn.gather(2, lab[..., 0].view(B, NE, 1, 1).expand(B, NE, 1, hdn.shape[-1])).squeeze(2)
-            tl = net.tier_logits(hsel, e)
-            l5 = F.cross_entropy(tl.reshape(B * NE, -1), lab[..., 2].reshape(-1))
-            ut = torch.zeros(B, NC, device=DEV)
-            ut.scatter_(1, lab[..., 0], 1.0)
-            ut.scatter_(1, lab[..., 1], 1.0)
-            l6 = F.binary_cross_entropy_with_logits(net._used, ut)
-            loss = l1 + l2 + 0.3 * (l3 + l4) + l5 + 0.5 * l6
+            loss = l1 + l2 + 0.3 * l4
+            if real.any():
+                lr_, ls_, hd_, e_, u_ = lab[real], ls[real], hdn[real], e[real], net._used[real]
+                Br = lr_.shape[0]
+                l3 = F.cross_entropy(ls_.transpose(1, 2).reshape(Br * NC, NE)[_cardmask(lr_[..., 0], NC)],
+                                     _cardtarget(lr_[..., 0], NC))
+                hsel = hd_.gather(2, lr_[..., 0].view(Br, NE, 1, 1).expand(Br, NE, 1, hd_.shape[-1])).squeeze(2)
+                tl = net.tier_logits(hsel, e_)
+                l5 = F.cross_entropy(tl.reshape(Br * NE, -1), lr_[..., 2].reshape(-1))
+                ut = torch.zeros(Br, NC, device=DEV)
+                ut.scatter_(1, lr_[..., 0], 1.0)
+                ut.scatter_(1, lr_[..., 1], 1.0)
+                l6 = F.binary_cross_entropy_with_logits(u_, ut)
+                loss = loss + 0.3 * l3 + l5 + 0.5 * l6
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -379,6 +506,7 @@ def main():
     train_cases = sorted(set(train.case_id))
     test_cases = sorted(set(test.case_id))
     all_ids = train_cases + test_cases
+    build_region_stats(raw)
     cases = {}
     for k, cid in enumerate(all_ids):
         cases[cid] = build_case(raw_by_id[cid])
@@ -389,6 +517,17 @@ def main():
         egold[r.entry_id] = gold[r.target_id]
         entry_case[r.entry_id] = r.case_id
     labels = {}
+    rng = random.Random(7)
+    card_pool = [(c["case_id"], {k: x[k] for k in ("title", "creators", "year")}) for c in raw for x in c["cards"]]
+    pseudo_ids = []
+    for rep in range(PSEUDO):
+        for cid in all_ids:
+            pc, pl = make_pseudo(raw_by_id[cid], rng, card_pool)
+            pid = f"{cid}_p{rep}"
+            cases[pid] = pc
+            labels[pid] = pl
+            pseudo_ids.append(pid)
+    print("pseudo", len(pseudo_ids), flush=True)
     for cid in train_cases:
         cs = cases[cid]
         pos = {x: j for j, x in enumerate(cs["card_ids"])}
@@ -402,7 +541,7 @@ def main():
         tc = list(train_cases)
         rng.shuffle(tc)
         va, tr = tc[:200], tc[200:]
-        nets = [train_model(cases, labels, tr, SEED + s) for s in range(N_MODELS)]
+        nets = [train_model(cases, labels, tr + pseudo_ids, SEED + s) for s in range(N_MODELS)]
         pred = predict(nets, cases, va)
         vg = {e: egold[e] for c in va for e in cases[c]["entry_ids"]}
         print("VAL score", score(pred, vg, entry_case))
@@ -410,8 +549,31 @@ def main():
         R = np.mean([pred[e]["companion_id"] == vg[e]["companion_id"] for e in vg])
         T = np.mean([pred[e]["tier"] == vg[e]["tier"] for e in vg])
         print("lead", L, "comp", R, "tier", T)
+        import collections
+        cnt = collections.Counter()
+        for c in va:
+            gl = {egold[e]["lead_id"]: "lead" for e in cases[c]["entry_ids"]}
+            gl.update({egold[e]["companion_id"]: "comp" for e in cases[c]["entry_ids"]})
+            ge = {}
+            for e in cases[c]["entry_ids"]:
+                ge[egold[e]["lead_id"]] = e
+                ge[egold[e]["companion_id"]] = e
+            for e in cases[c]["entry_ids"]:
+                for r in ("lead_id", "companion_id"):
+                    pc = pred[e][r]
+                    if pc == egold[e][r]:
+                        cnt[r, "ok"] += 1
+                    elif pc not in gl:
+                        cnt[r, "alt"] += 1
+                    elif ge[pc] == e:
+                        cnt[r, "swap"] += 1
+                    else:
+                        cnt[r, "other_entry_" + gl[pc]] += 1
+        for k, v in sorted(cnt.items()):
+            print(k, v)
+        pickle_out = Path(os.environ.get("DUMP", "/dev/null"))
         return
-    nets = [train_model(cases, labels, train_cases, SEED + s) for s in range(N_MODELS)]
+    nets = [train_model(cases, labels, train_cases + pseudo_ids, SEED + s) for s in range(N_MODELS)]
     pred = predict(nets, cases, test_cases)
     rows = []
     for r in test.itertuples():
