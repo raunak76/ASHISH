@@ -24,6 +24,7 @@ VAL = os.environ.get("VAL", "0") == "1"
 EPOCHS = int(os.environ.get("EPOCHS", "8"))
 N_MODELS = int(os.environ.get("N_MODELS", "5"))
 CTX_LAYERS = int(os.environ.get("CTX_LAYERS", "2"))
+USE_GOLD_STATS = os.environ.get("GOLDSTATS", "1") == "1"
 PSEUDO = int(os.environ.get("PSEUDO", "0"))
 TRI = os.environ.get("TRI", "1") == "1"
 EMBW = float(os.environ.get("EMBW", "1"))
@@ -131,15 +132,29 @@ def pair_raw(ei, c, ct, cc, cy):
     return [float(ov_c), float(ov_c > 0), float(ov_t), jac_t, float(lab_ov), best, dy, hy, max(js), sum(js) / len(js), cs]
 
 
-NPR = 21
+NPR = 25
 REG = {}
 
 
-def build_region_stats(raw):
-    """Corpus statistics from known works only (inputs, no answers):
-    how often each creator / title token / exact text co-occurs with a region."""
+def build_region_stats(raw, gold_works=()):
+    """Corpus statistics of how often each creator / title token / exact text
+    co-occurs with a region. Built from known works (inputs) plus training answer
+    works; each training case's own answer contribution is recorded so it can be
+    subtracted (out-of-fold) when featurizing that case."""
     from collections import defaultdict, Counter
     cre, tok, txt = defaultdict(Counter), defaultdict(Counter), defaultdict(Counter)
+    own = defaultdict(Counter)
+    for cid, r, k in gold_works:
+        for x in ctoks(k["creators"]):
+            cre[x][r] += 1
+            own[cid][("c", x, r)] += 1
+        for t in set(toks(k["title"])):
+            if t not in STOP and len(t) > 2:
+                tok[t][r] += 1
+                own[cid][("t", t, r)] += 1
+        txt[(k["title"], k["creators"])][r] += 1
+        own[cid][("x", (k["title"], k["creators"]), r)] += 1
+    REG["own"] = own
     regions = Counter()
     for c in raw:
         for e in c["entries"]:
@@ -152,81 +167,84 @@ def build_region_stats(raw):
                     if t not in STOP and len(t) > 2:
                         tok[t][r] += 1
                 txt[(k["title"], k["creators"])][r] += 1
-    co_c, co_t = defaultdict(Counter), defaultdict(Counter)
-    tdf = Counter()
+    co = defaultdict(Counter)
+    df = Counter()
+    n_ent = 0
     for c in raw:
         for e in c["entries"]:
-            cs_ = set()
-            ts_ = set()
+            n_ent += 1
+            items = set()
             for k in e["known_works"]:
-                cs_ |= ctoks(k["creators"])
-                ts_ |= {t for t in toks(k["title"]) if t not in STOP and len(t) > 2 and t != "xentryx"}
-            for a in cs_:
-                for b in cs_:
-                    if a != b:
-                        co_c[a][b] += 1
-            for t in ts_:
-                tdf[t] += 1
-            ts_ = sorted(ts_)[:40]
-            for a in ts_:
-                for b in ts_:
-                    if a != b:
-                        co_t[a][b] += 1
-    REG.update(co_c=co_c, co_t=co_t, tdf=tdf)
+                items |= {"c:" + x for x in ctoks(k["creators"])}
+                items |= {"t:" + t for t in toks(k["title"]) if t not in STOP and len(t) > 2 and t != "xentryx"}
+            for x in items:
+                df[x] += 1
+            items = sorted(items)[:60]
+            for x in items:
+                for y in items:
+                    if x != y:
+                        co[x][y] += 1
+    REG.update(co=co, df=df, n_ent=n_ent)
     tot = sum(regions.values())
     REG.update(cre=cre, tok=tok, txt=txt, prior={r: v / tot for r, v in regions.items()})
 
 
-def region_feats(region, c, ct, cc):
+def region_feats(region, c, ct, cc, own):
     prior = REG["prior"].get(region, 0.1)
 
-    def p(counter):
+    def p(counter, kind, key):
         n = sum(counter.values())
-        return (counter.get(region, 0) + prior) / (n + 1), n
+        hit = counter.get(region, 0)
+        if own:
+            for r in counter:
+                o = own.get((kind, key, r), 0)
+                n -= o
+                if r == region:
+                    hit -= o
+        return (hit + prior) / (n + 1), n
 
     best_c, nc = prior, 0
     for x in cc:
         if x in REG["cre"]:
-            v, n = p(REG["cre"][x])
+            v, n = p(REG["cre"][x], "c", x)
             if n > nc:
                 best_c, nc = v, n
     vals = []
     for t in ct:
         if t in REG["tok"]:
-            v, n = p(REG["tok"][t])
+            v, n = p(REG["tok"][t], "t", t)
             if n >= 2:
                 vals.append(math.log(v / prior))
-    tv, tn = p(REG["txt"].get((c["title"], c["creators"]), {}))
+    key = (c["title"], c["creators"])
+    tv, tn = p(REG["txt"].get(key, {}), "x", key)
     return [math.log(best_c / prior), math.log1p(nc), sum(vals), max(vals) if vals else 0.0,
             math.log(tv / prior) if tn else 0.0, math.log1p(tn)]
 
 
 def cooc_feats(ei, ct, cc):
-    co_c, co_t, tdf = REG["co_c"], REG["co_t"], REG["tdf"]
-    cm, csum = 0.0, 0.0
-    for x in cc:
-        d = co_c.get(x)
-        if d:
-            for y in ei["kc"]:
-                v = d.get(y, 0)
-                if v:
-                    csum += v
-                    cm = max(cm, v)
-    tm, tsum = 0.0, 0.0
-    for a in ct:
-        d = co_t.get(a)
-        if not d:
-            continue
-        for b in ei["kt"]:
-            v = d.get(b, 0)
-            if v:
-                pmi = math.log(v * 6000.0 / (tdf[a] * tdf[b]))
-                tsum += max(pmi, 0)
-                tm = max(tm, pmi)
-    return [math.log1p(cm), math.log1p(csum), tm, tsum / (1 + len(ct))]
+    co, df, N = REG["co"], REG["df"], REG["n_ent"]
+    out = []
+    cards = (["c:" + x for x in cc], ["t:" + t for t in ct if t != "xentryx"])
+    ents = (["c:" + x for x in ei["kc"]], ["t:" + t for t in ei["kt"] if t != "xentryx"])
+    for ci in cards:
+        for ej in ents:
+            m, sm = 0.0, 0.0
+            for x in ci:
+                d = co.get(x)
+                if not d:
+                    continue
+                for y in ej:
+                    v = d.get(y, 0)
+                    if v:
+                        pmi = math.log(v * N / (df[x] * df[y]))
+                        sm += max(pmi, 0) * min(v, 3) / 3
+                        m = max(m, pmi)
+            out += [m, sm / (1 + len(ci))]
+    return out
 
 
 def build_case(c):
+    own = REG.get("own", {}).get(c["case_id"])
     E = c["entries"]
     C = c["cards"]
     infos = [entry_info(e) for e in E]
@@ -236,7 +254,7 @@ def build_case(c):
     raw = np.zeros((len(E), len(C), NPR), np.float32)
     for i, ei in enumerate(infos):
         for j, x in enumerate(C):
-            raw[i, j] = pair_raw(ei, x, cts[j], ccs[j], cys[j]) + region_feats(ei["region"], x, cts[j], ccs[j]) + cooc_feats(ei, cts[j], ccs[j])
+            raw[i, j] = pair_raw(ei, x, cts[j], ccs[j], cys[j]) + region_feats(ei["region"], x, cts[j], ccs[j], own) + cooc_feats(ei, cts[j], ccs[j])
     # contextual: relative to other entries for the same card and other cards for same entry
     mx_e = raw.max(0, keepdims=True)
     mx_c = raw.max(1, keepdims=True)
@@ -506,7 +524,22 @@ def main():
     train_cases = sorted(set(train.case_id))
     test_cases = sorted(set(test.case_id))
     all_ids = train_cases + test_cases
-    build_region_stats(raw)
+    val_cases = set()
+    if VAL:
+        tc = list(train_cases)
+        random.Random(0).shuffle(tc)
+        val_cases = set(tc[:200])
+    gold_works = []
+    if USE_GOLD_STATS:
+        ereg = {e["entry_id"]: e["region"] for c in raw for e in c["entries"]}
+        cmap = {c["case_id"]: {x["card_id"]: x for x in c["cards"]} for c in raw}
+        for r in train.itertuples():
+            if r.case_id in val_cases:
+                continue
+            g = gold[r.target_id]
+            for role in ("lead_id", "companion_id"):
+                gold_works.append((r.case_id, ereg[r.entry_id], cmap[r.case_id][g[role]]))
+    build_region_stats(raw, gold_works)
     cases = {}
     for k, cid in enumerate(all_ids):
         cases[cid] = build_case(raw_by_id[cid])
