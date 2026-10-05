@@ -23,6 +23,7 @@ SEED = 1234
 VAL = os.environ.get("VAL", "0") == "1"
 EPOCHS = int(os.environ.get("EPOCHS", "5"))
 N_MODELS = int(os.environ.get("N_MODELS", "3"))
+TRI = os.environ.get("TRI", "1") == "1"
 EMBW = float(os.environ.get("EMBW", "1"))
 DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -155,20 +156,24 @@ def build_case(c):
     ctok = []
     for x in C:
         ids = [h("t:" + t) for t in toks(x["title"])] + [h("c:" + t) for t in ctoks(x["creators"])]
+        if TRI:
+            ids += [h("g:" + g) for g in sorted(tri(" ".join(toks(x["title"]))))][:48]
         ys = years(x["year"])
         ids += [h("y:" + str(ys[0] // 10))] if ys else [h("y:none")]
-        ctok.append(ids[:64] or [0])
+        ctok.append(ids[:112] or [0])
     etok = []
     for e in E:
         ids = [h("r:" + e["region"])]
         for k in e["known_works"]:
             ids += [h("t:" + t) for t in toks(k["title"])] + [h("c:" + t) for t in ctoks(k["creators"])]
+            if TRI:
+                ids += [h("g:" + g) for g in sorted(tri(" ".join(toks(k["title"]))))][:48]
             ys = years(k["year"])
             if ys:
                 ids.append(h("y:" + str(ys[0] // 10)))
         for l in e["labels"]:
             ids += [h("l:" + t) for t in toks(l)]
-        etok.append(ids[:160] or [0])
+        etok.append(ids[:256] or [0])
     return dict(pf=pf, cf=cf, ctok=ctok, etok=etok, card_ids=[x["card_id"] for x in C],
                 entry_ids=[e["entry_id"] for e in E])
 
@@ -219,8 +224,8 @@ class Net(nn.Module):
 def to_tensors(cases, idx):
     pf = torch.tensor(np.stack([cases[i]["pf"] for i in idx]))
     cf = torch.tensor(np.stack([cases[i]["cf"] for i in idx]))
-    ctok = torch.tensor(np.stack([pad(cases[i]["ctok"], 64) for i in idx]))
-    etok = torch.tensor(np.stack([pad(cases[i]["etok"], 160) for i in idx]))
+    ctok = torch.tensor(np.stack([pad(cases[i]["ctok"], 112) for i in idx]))
+    etok = torch.tensor(np.stack([pad(cases[i]["etok"], 256) for i in idx]))
     return pf.to(DEV), cf.to(DEV), ctok.to(DEV), etok.to(DEV)
 
 
